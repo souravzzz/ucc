@@ -16,29 +16,35 @@
 
 #define CORES 8
 #define MAX_THREADS 128
+
 typedef struct {
     pthread_t id;
     int idx, nthreads;
     dpu_ucc_comm_t comm;
     dpu_hc_t *hc;
-    unsigned int itt;
+    dpu_get_sync_t ar_sync;
 } thread_ctx_t;
 
 /* thread accisble data - split reader/writer */
 typedef struct {
-    volatile unsigned long g_itt;  /* first cache line */
-    volatile unsigned long pad[3]; /* pad to 64bytes */
-    volatile unsigned long l_itt;  /* second cache line */
-    volatile unsigned long pad2[3]; /* pad to 64 bytes */
+    volatile unsigned int g_coll_id;  /* first cache line */
+    volatile unsigned int pad[7]; /* pad to 64bytes */
+    volatile unsigned int l_coll_id;  /* second cache line */
+    volatile unsigned int pad2[7]; /* pad to 64 bytes */
 } thread_sync_t;
 
-static thread_sync_t *thread_sync = NULL;
+static thread_sync_t *thread_main_sync = NULL;
+static thread_sync_t *thread_sub_sync = NULL;
+dpu_put_sync_t tmp_sync;
 
 void *dpu_worker(void *arg)
 {
+    // fprintf (stdout, "sleeping %d\n", getpid());
+    // sleep(20);
     thread_ctx_t *ctx = (thread_ctx_t*)arg;
     int places = CORES/ctx->nthreads;
-    int i = 0, j = 0;
+    int i = 0, j = 0, inprogress = 0;
+    dpu_put_sync_t *lsync = ctx->hc->mem_segs.sync.base;
 
     ucc_coll_req_h request;
     cpu_set_t cpuset;
@@ -51,90 +57,144 @@ void *dpu_worker(void *arg)
 	for (i = 0; i < places; i++) {
 		CPU_SET((ctx->idx*places)+i, &cpuset);
 	}
-
+    
     i = pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset);
 
     while(1) {
-        ctx->itt++;
+        /* Wait for operation to start */
+        ctx->ar_sync.coll_id++;
+        ctx->ar_sync.count_serviced = 0;
         if (ctx->idx > 0) {
-            while (thread_sync[ctx->idx].g_itt < ctx->itt) {
+            while (thread_main_sync[ctx->idx].g_coll_id < ctx->ar_sync.coll_id) {
                 /* busy wait */
             }
         }
         else {
-            dpu_hc_wait(ctx->hc, ctx->itt);
+            /* Data arrived, main thread will synchronize sub threads */
+            dpu_hc_wait(ctx->hc, ctx->ar_sync.coll_id);
             for (i = 0; i < ctx->nthreads; i++) {
-                thread_sync[i].g_itt++;
+                thread_main_sync[i].g_coll_id++;
             }
         }
-    
-        int offset, block;
-        int count = dpu_hc_get_count_total(ctx->hc);
-        int ready = 0;
-        int dt_size = dpu_ucc_dt_size(dpu_hc_get_dtype(ctx->hc));
 
-        block = count / ctx->nthreads;
-        offset = block * ctx->idx;
-        if(ctx->idx < (count % ctx->nthreads)) {
-            offset += ctx->idx;
-            block++;
-        } else {
-            offset += (count % ctx->nthreads);
-        }
-        
-        ucc_coll_args_t coll = {
-            .mask      = UCC_COLL_ARGS_FIELD_PREDEFINED_REDUCTIONS,
-            .coll_type = UCC_COLL_TYPE_ALLREDUCE,
-            .src.info = {
-                .buffer   = ctx->hc->mem_segs.put.base + offset * dt_size,
-                .count    = block * dt_size,
-                .datatype = dpu_hc_get_dtype(ctx->hc),
-                .mem_type = UCC_MEMORY_TYPE_HOST,
-            },
-            .dst.info = {
-                .buffer     = ctx->hc->mem_segs.get.base + offset * dt_size,
-                .count      = block * dt_size,
-                .datatype   = dpu_hc_get_dtype(ctx->hc),
-                .mem_type = UCC_MEMORY_TYPE_HOST,
-            },
-            .reduce = {
-                .predefined_op = dpu_hc_get_op(ctx->hc),
-            },
-        };
-
-        if (coll.reduce.predefined_op == UCC_OP_USERDEFINED &&
-			coll.src.info.datatype    == UCC_DT_USERDEFINED) {
+        /* Hang up? */
+        if (lsync->op    == UCC_OP_USERDEFINED &&
+            lsync->dtype == UCC_DT_USERDEFINED) {
             break;
         }
 
-        UCC_CHECK(ucc_collective_init(&coll, &request, ctx->comm.team));
-        UCC_CHECK(ucc_collective_post(request));
-        while (UCC_OK != ucc_collective_test(request)) {
-            ucc_context_progress(ctx->comm.ctx);
-        }
-        UCC_CHECK(ucc_collective_finalize(request));
+        /* Process all data */
+        do {
+            thread_sub_sync[ctx->idx].g_coll_id++;
+            if (ctx->idx > 0) { /* sub threads */
+                while (thread_sub_sync[ctx->idx].l_coll_id < thread_sub_sync[ctx->idx].g_coll_id) {
+                    /* busy wait */
+                }
+            }
+            else { /* main */
+                inprogress = 0;
 
-        thread_sync[ctx->idx].l_itt++;
+                /* main waits for count_in to be updated from host */
+                while(lsync->count_in <= ctx->ar_sync.count_serviced) {
+                    /* busy wait */
+                }
 
-        if (ctx->idx == 0) {
-            while (ready != ctx->nthreads) {
-                ready = 0;
-                for (i = 0; i < ctx->nthreads; i++) {
-                    if (thread_sync[i].l_itt == ctx->itt) {
-                        ready++;
+                /* Main thread syncs incoming data */
+                memcpy(&tmp_sync, lsync, sizeof(dpu_put_sync_t));
+
+                inprogress = 1;
+                while (inprogress) {
+                    inprogress = 0;
+                    /* check if all threads are ready */
+                    for (i = 1; i < ctx->nthreads; i++) {
+                        if(thread_sub_sync[i].g_coll_id < thread_sub_sync[ctx->idx].g_coll_id ) {
+                            inprogress++;
+                            break;
+                        }
                     }
-                    else {
+                    if (!inprogress) {
+                        /* Release sub threads */
+                        for (i = 1; i < ctx->nthreads; i++) {
+                            thread_sub_sync[i].l_coll_id++;
+                        }
                         break;
                     }
                 }
             }
-    
-            dpu_hc_reply(ctx->hc, ctx->itt);
-        }
+
+            int offset, block;
+            int count = tmp_sync.count_in - ctx->ar_sync.count_serviced;
+            int ready = 0;
+            int dt_size = dpu_ucc_dt_size(tmp_sync.dtype);
+
+            block = count / ctx->nthreads;
+            offset = ctx->ar_sync.count_serviced + block * ctx->idx;
+            if(ctx->idx < (count % ctx->nthreads)) {
+                offset += ctx->idx;
+                block++;
+            } else {
+                offset += (count % ctx->nthreads);
+            }
+            
+            ucc_coll_args_t coll = {
+                .mask      = UCC_COLL_ARGS_FIELD_PREDEFINED_REDUCTIONS,
+                .coll_type = UCC_COLL_TYPE_ALLREDUCE,
+                .src.info = {
+                    .buffer   = ctx->hc->mem_segs.put.base + offset * dt_size,
+                    .count    = block * dt_size,
+                    .datatype = tmp_sync.dtype,
+                    .mem_type = UCC_MEMORY_TYPE_HOST,
+                },
+                .dst.info = {
+                    .buffer     = ctx->hc->mem_segs.get.base + offset * dt_size,
+                    .count      = block * dt_size,
+                    .datatype   = tmp_sync.dtype,
+                    .mem_type = UCC_MEMORY_TYPE_HOST,
+                },
+                .reduce = {
+                    .predefined_op = tmp_sync.op,
+                },
+            };
+
+            UCC_CHECK(ucc_collective_init(&coll, &request, ctx->comm.team));
+            UCC_CHECK(ucc_collective_post(request));
+            while (UCC_OK != ucc_collective_test(request)) {
+                ucc_context_progress(ctx->comm.ctx);
+            }
+            UCC_CHECK(ucc_collective_finalize(request));
+
+            thread_sub_sync[ctx->idx].g_coll_id++;
+            ctx->ar_sync.count_serviced += count;
+
+            if (ctx->idx > 0) {
+
+                /* wait to be released into next iteration and updated count_serviced */
+                while (thread_sub_sync[ctx->idx].l_coll_id < thread_sub_sync[ctx->idx].g_coll_id) {
+                    /* busy wait */
+                }
+            }
+            else {
+                do {
+                    inprogress = 0;
+                    for (i = 1; i < ctx->nthreads; i++) {
+                        if (thread_sub_sync[ctx->idx].g_coll_id > thread_sub_sync[i].g_coll_id) {
+                            inprogress++;
+                            break;
+                        }
+                    }
+                } while(inprogress);
+
+                for (i = 1; i < ctx->nthreads; i++) {
+                    thread_sub_sync[i].l_coll_id++;
+                }
+                dpu_hc_reply(ctx->hc, ctx->ar_sync);
+            }
+        } while (ctx->ar_sync.count_serviced < lsync->count_total);
+
+        thread_main_sync[ctx->idx].l_coll_id++;
     }
 
 //     fprintf(stderr, "ctx->itt = %u\n", ctx->itt);
-
     return NULL;
 }
 
@@ -162,8 +222,13 @@ int main(int argc, char **argv)
     UCC_CHECK(dpu_ucc_init(argc, argv, &ucc_glob));
 
 //     thread_sync = calloc(nthreads, sizeof(*thread_sync));
-    thread_sync = aligned_alloc(64, nthreads * sizeof(*thread_sync));
-    memset(thread_sync, 0, nthreads * sizeof(*thread_sync));
+    thread_main_sync = aligned_alloc(64, nthreads * sizeof(*thread_main_sync));
+    memset(thread_main_sync, 0, nthreads * sizeof(*thread_main_sync));
+
+    thread_sub_sync = aligned_alloc(64, nthreads * sizeof(*thread_sub_sync));
+    memset(thread_sub_sync, 0, nthreads * sizeof(*thread_sub_sync));
+
+    memset(&tmp_sync, 0, sizeof(tmp_sync));
 
     dpu_hc_init(hc);
     dpu_hc_accept(hc);
@@ -174,7 +239,8 @@ int main(int argc, char **argv)
         tctx_pool[i].idx = i;
         tctx_pool[i].nthreads = nthreads;
         tctx_pool[i].hc       = hc;
-        tctx_pool[i].itt = 0;
+        tctx_pool[i].ar_sync.coll_id = 0;
+        tctx_pool[i].ar_sync.count_serviced = 0;
 
         if (i < nthreads - 1) {
             pthread_create(&tctx_pool[i].id, NULL, dpu_worker,

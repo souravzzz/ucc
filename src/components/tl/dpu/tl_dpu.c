@@ -12,21 +12,19 @@ ucc_status_t ucc_tl_dpu_get_context_attr(const ucc_base_context_t *context,
                                          ucc_base_ctx_attr_t      *base_attr);
 
 static ucc_config_field_t ucc_tl_dpu_lib_config_table[] = {
-    {   "",
-        "",
-        NULL,
-        ucc_offsetof(ucc_tl_dpu_lib_config_t, super),
-        UCC_CONFIG_TYPE_TABLE(ucc_tl_lib_config_table)
-    },
+    {"", "", NULL, ucc_offsetof(ucc_tl_dpu_lib_config_t, super),
+     UCC_CONFIG_TYPE_TABLE(ucc_tl_lib_config_table)},
+
+    {"PIPELINE_BLOCK_SIZE", "0",
+     "Pipeline block size in bytes. (auto round-down to multiple of 8)",
+     ucc_offsetof(ucc_tl_dpu_lib_config_t, pipeline_block_size),
+     UCC_CONFIG_TYPE_UINT},
+
     {NULL}};
 
 static ucs_config_field_t ucc_tl_dpu_context_config_table[] = {
-    {   "",
-        "",
-        NULL,
-        ucc_offsetof(ucc_tl_dpu_context_config_t, super),
-        UCC_CONFIG_TYPE_TABLE(ucc_tl_context_config_table)
-    },
+    {"", "", NULL, ucc_offsetof(ucc_tl_dpu_context_config_t, super),
+     UCC_CONFIG_TYPE_TABLE(ucc_tl_context_config_table)},
 
     {"SERVER_HOSTNAME", "",
      "Bluefield IP address",
@@ -40,11 +38,11 @@ static ucs_config_field_t ucc_tl_dpu_context_config_table[] = {
      UCC_CONFIG_TYPE_UINT
     },
 
-    {"ENABLE", "0",
-     "Assume server is running on BF",
-     ucc_offsetof(ucc_tl_dpu_context_config_t, use_dpu),
-     UCC_CONFIG_TYPE_UINT
-    },
+    // {"ENABLE", "0",
+    //  "Assume server is running on BF",
+    //  ucc_offsetof(ucc_tl_dpu_context_config_t, use_dpu),
+    //  UCC_CONFIG_TYPE_UINT
+    // },
 
     {"HOST_DPU_LIST", "",
      "A host-dpu list used to identify the DPU IP",

@@ -11,8 +11,6 @@
 UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
                     const ucc_base_team_params_t *params)
 {
-    
-
     ucc_status_t ucc_status = UCC_OK; 
     ucc_tl_dpu_context_t *ctx =
         ucc_derived_of(tl_context, ucc_tl_dpu_context_t);
@@ -36,20 +34,20 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     self->conn_buf->mmap_params.field_mask =
                                 UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
                                 UCP_MEM_MAP_PARAM_FIELD_LENGTH;
-    self->conn_buf->mmap_params.address = (void*)&self->ctrl_seg;
-    self->conn_buf->mmap_params.length = sizeof(self->ctrl_seg);
+    self->conn_buf->mmap_params.address = (void*)&self->get_sync;
+    self->conn_buf->mmap_params.length = sizeof(ucc_tl_dpu_get_sync_t);
 
     ucc_status = ucs_status_to_ucc_status(
             ucp_mem_map(ctx->ucp_context, &self->conn_buf->mmap_params,
-                        &self->ctrl_seg_memh));
+                        &self->get_sync_memh));
     if (UCC_OK != ucc_status) {
         goto err;
     }
 
     ucc_status = ucs_status_to_ucc_status(
-        ucp_rkey_pack(ctx->ucp_context, self->ctrl_seg_memh,
-                      &self->conn_buf->ctrl_seg_rkey_buf,
-                      &self->conn_buf->ctrl_seg_rkey_buf_size));
+        ucp_rkey_pack(ctx->ucp_context, self->get_sync_memh,
+                      &self->conn_buf->get_sync_rkey_buf,
+                      &self->conn_buf->get_sync_rkey_buf_size));
     if (UCC_OK != ucc_status) {
         goto err;
     }
@@ -75,7 +73,7 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     }
 
     self->send_req[1] = ucp_tag_send_nbx(ctx->ucp_ep,
-                                    &self->conn_buf->ctrl_seg_rkey_buf_size,
+                                    &self->conn_buf->get_sync_rkey_buf_size,
                                     sizeof(size_t),
                                     UCC_TL_DPU_EXCHANGE_LENGTH_TAG,
                                     &send_req_param);
@@ -85,8 +83,8 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     }
 
     self->send_req[2] = ucp_tag_send_nbx(ctx->ucp_ep,
-                                    self->conn_buf->ctrl_seg_rkey_buf,
-                                    self->conn_buf->ctrl_seg_rkey_buf_size,
+                                    self->conn_buf->get_sync_rkey_buf,
+                                    self->conn_buf->get_sync_rkey_buf_size,
                                     UCC_TL_DPU_EXCHANGE_RKEY_TAG,
                                     &send_req_param);
     ucc_status = ucc_tl_dpu_req_check(self, self->send_req[2]);
@@ -120,8 +118,8 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
         return UCC_OK;
     }
 
-    ucp_rkey_buffer_release(self->conn_buf->ctrl_seg_rkey_buf);
-    self->conn_buf->ctrl_seg_rkey_buf = NULL;
+    ucp_rkey_buffer_release(self->conn_buf->get_sync_rkey_buf);
+    self->conn_buf->get_sync_rkey_buf = NULL;
 
     total_rkey_size     = self->conn_buf->rem_rkeys_lengths[0] +
                           self->conn_buf->rem_rkeys_lengths[1] +
@@ -195,9 +193,9 @@ err:
     if (self->conn_buf->rem_rkeys) {
         ucc_free(self->conn_buf->rem_rkeys);
     }
-    if (self->conn_buf->ctrl_seg_rkey_buf) {
-        ucp_rkey_buffer_release(self->conn_buf->ctrl_seg_rkey_buf);
-        self->conn_buf->ctrl_seg_rkey_buf = NULL;
+    if (self->conn_buf->get_sync_rkey_buf) {
+        ucp_rkey_buffer_release(self->conn_buf->get_sync_rkey_buf);
+        self->conn_buf->get_sync_rkey_buf = NULL;
     }
     ucc_free(self->conn_buf);
 
@@ -216,14 +214,14 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
 {
     ucc_tl_dpu_team_t           *team = ucc_derived_of(tl_team, ucc_tl_dpu_team_t);
     ucc_tl_dpu_context_t        *ctx = UCC_TL_DPU_TEAM_CTX(team);
-    ucc_tl_dpu_sync_t           hangup;
+    ucc_tl_dpu_put_sync_t       hangup;
     ucc_tl_dpu_request_t        *hangup_req;
     ucp_request_param_t         req_param;
  
-    hangup.coll_id  = team->coll_id;
-    hangup.dtype    = UCC_DT_USERDEFINED;
-    hangup.op       = UCC_OP_USERDEFINED;
-    hangup.count_in      = 0;
+    hangup.coll_id      = team->coll_id;
+    hangup.dtype        = UCC_DT_USERDEFINED;
+    hangup.op           = UCC_OP_USERDEFINED;
+    hangup.count_out    = 0;
  
     req_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
                              UCP_OP_ATTR_FIELD_DATATYPE;
@@ -243,7 +241,7 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
     ucp_rkey_destroy(team->rem_ctrl_seg_key);
     ucp_rkey_destroy(team->rem_data_in_key);
     ucp_rkey_destroy(team->rem_data_out_key);
-    ucp_mem_unmap(ctx->ucp_context, team->ctrl_seg_memh);
+    ucp_mem_unmap(ctx->ucp_context, team->get_sync_memh);
 
     UCC_CLASS_DELETE_FUNC_NAME(ucc_tl_dpu_team_t)(tl_team);
 
@@ -286,8 +284,8 @@ ucc_status_t ucc_tl_dpu_team_create_test(ucc_base_team_t *tl_team)
         }
 
         /* Continue connection establishment */
-        ucp_rkey_buffer_release(team->conn_buf->ctrl_seg_rkey_buf);
-        team->conn_buf->ctrl_seg_rkey_buf = NULL;
+        ucp_rkey_buffer_release(team->conn_buf->get_sync_rkey_buf);
+        team->conn_buf->get_sync_rkey_buf = NULL;
 
         total_rkey_size = team->conn_buf->rem_rkeys_lengths[0] +
                           team->conn_buf->rem_rkeys_lengths[1] +
@@ -379,9 +377,9 @@ err:
     if (team->conn_buf->rem_rkeys) {
         ucc_free(team->conn_buf->rem_rkeys);
     }
-    if (team->conn_buf->ctrl_seg_rkey_buf) {
-        ucp_rkey_buffer_release(team->conn_buf->ctrl_seg_rkey_buf);
-        team->conn_buf->ctrl_seg_rkey_buf = NULL;
+    if (team->conn_buf->get_sync_rkey_buf) {
+        ucp_rkey_buffer_release(team->conn_buf->get_sync_rkey_buf);
+        team->conn_buf->get_sync_rkey_buf = NULL;
     }
     ucc_free(team->conn_buf);
 

@@ -301,7 +301,7 @@ int dpu_hc_init(dpu_hc_t *hc)
     if (ret) {
         goto err_put;
     }
-    ret = _dpu_hc_buffer_alloc(hc, &hc->mem_segs.sync, sizeof(dpu_sync_t));
+    ret = _dpu_hc_buffer_alloc(hc, &hc->mem_segs.sync, sizeof(dpu_put_sync_t));
     if (ret) {
         goto err_get;
     }
@@ -585,11 +585,11 @@ err:
     return ret;
 }
 
-int dpu_hc_wait(dpu_hc_t *hc, unsigned int cntr)
+int dpu_hc_wait(dpu_hc_t *hc, unsigned int coll_id)
 {
-    dpu_sync_t *lsync = (dpu_sync_t*)hc->mem_segs.sync.base;
+    dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     
-    while( lsync->coll_id < cntr) {
+    while( lsync->coll_id < coll_id) {
         ucp_worker_progress(hc->ucp_worker);
     }
     return 0;
@@ -597,57 +597,54 @@ int dpu_hc_wait(dpu_hc_t *hc, unsigned int cntr)
 
 ucc_datatype_t dpu_hc_get_dtype(dpu_hc_t *hc)
 {
-    dpu_sync_t *lsync = (dpu_sync_t*)hc->mem_segs.sync.base;
+    dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     return lsync->dtype;
 }
 
 ucc_reduction_op_t dpu_hc_get_op(dpu_hc_t *hc)
 {
-    dpu_sync_t *lsync = (dpu_sync_t*)hc->mem_segs.sync.base;
+    dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     return lsync->op;
 }
 
 unsigned int dpu_hc_get_count_total(dpu_hc_t *hc)
 {
-    dpu_sync_t *lsync = (dpu_sync_t*)hc->mem_segs.sync.base;
+    dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     return lsync->count_total;
 }
 
 unsigned int dpu_hc_get_count_in(dpu_hc_t *hc)
 {
-    dpu_sync_t *lsync = (dpu_sync_t*)hc->mem_segs.sync.base;
+    dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     return lsync->count_in;
 }
 
-int dpu_hc_reply(dpu_hc_t *hc, unsigned int cntr)
+int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t ar_sync)
 {
-    dpu_sync_t *lsync = (dpu_sync_t*)hc->mem_segs.sync.base;
-    uint32_t rsync;
+    // dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     ucp_request_param_t req_param;
     void *request;
     dpu_req_t req_ctx = { 0 };
     int ret;
 
     req_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-            UCP_OP_ATTR_FIELD_DATATYPE |
-            UCP_OP_ATTR_FIELD_USER_DATA;
+                             UCP_OP_ATTR_FIELD_DATATYPE |
+                             UCP_OP_ATTR_FIELD_USER_DATA;
     req_param.datatype     = ucp_dt_make_contig(1);
     req_param.cb.send      = send_cb;
-    req_param.user_data     = &req_ctx;
+    req_param.user_data    = &req_ctx;
 
 //     static unsigned int cntr = 1;
 //     while( lsync->itt < cntr) {
 //         ucp_worker_progress(hc->ucp_worker);
 //     }
-
-    request = ucp_put_nbx(hc->host_ep, &cntr, sizeof(cntr),
-                              hc->sync_addr, hc->sync_rkey,
-                              &req_param);
+    request = ucp_put_nbx(hc->host_ep, &ar_sync, sizeof(ar_sync),
+                          hc->sync_addr, hc->sync_rkey,
+                          &req_param);
     ret = _dpu_request_finalize(hc->ucp_worker, request, &req_ctx);
     if (ret) {
         return -1;
     }
-//     cntr++;
     return 0;
 }
 

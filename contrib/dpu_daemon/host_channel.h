@@ -42,14 +42,19 @@ typedef struct dpu_req_s {
 
 /* sync struct type
  * use it for counter, dtype, ar op, length */
-typedef struct dpu_sync_s {
+typedef struct dpu_put_sync_s {
     unsigned int        coll_id;
+    unsigned int        count_in;
+    unsigned int        count_total;
     ucc_datatype_t      dtype;
     ucc_reduction_op_t  op;
-    unsigned int        count_total;
-    unsigned int        count_in;
     ucc_coll_type_t     coll_type;
-} dpu_sync_t;
+} dpu_put_sync_t;
+
+typedef struct dpu_get_sync_s {
+    unsigned int    coll_id;
+    unsigned int    count_serviced;
+} dpu_get_sync_t;
 
 typedef struct dpu_rkey_s {
     void *rkey_addr;
@@ -93,8 +98,8 @@ typedef struct dpu_hc_s {
 
 int dpu_hc_init(dpu_hc_t *dpu_hc);
 int dpu_hc_accept(dpu_hc_t *hc);
-int dpu_hc_reply(dpu_hc_t *hc, unsigned int itt);
-int dpu_hc_wait(dpu_hc_t *hc, unsigned int itt);
+int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t ar_sync);
+int dpu_hc_wait(dpu_hc_t *hc, unsigned int coll_id);
 unsigned int        dpu_hc_get_count_total(dpu_hc_t *hc);
 unsigned int        dpu_hc_get_count_in(dpu_hc_t *hc);
 ucc_datatype_t      dpu_hc_get_dtype(dpu_hc_t *hc);
