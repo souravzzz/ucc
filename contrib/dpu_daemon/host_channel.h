@@ -43,12 +43,12 @@ typedef struct dpu_req_s {
 /* sync struct type
  * use it for counter, dtype, ar op, length */
 typedef struct dpu_put_sync_s {
-    unsigned int        coll_id;
-    unsigned int        count_in;
-    unsigned int        count_total;
     ucc_datatype_t      dtype;
     ucc_reduction_op_t  op;
     ucc_coll_type_t     coll_type;
+    unsigned int        count_total;
+    unsigned int        count_in;
+    unsigned int        coll_id;
 } dpu_put_sync_t;
 
 typedef struct dpu_get_sync_s {
@@ -57,8 +57,8 @@ typedef struct dpu_get_sync_s {
 } dpu_get_sync_t;
 
 typedef struct dpu_rkey_s {
-    void *rkey_addr;
-    size_t rkey_addr_len;
+    void    *rkey_addr;
+    size_t  rkey_addr_len;
 } dpu_rkey_t;
 
 typedef struct dpu_mem_s {

@@ -26,6 +26,7 @@
 #define MAX_DPU_HOST_NAME 256
 
 #define UCC_TL_DPU_PIPELINE_BLOCK_SIZE_MIN 1024
+#define UCC_TL_DPU_PIPELINE_BUFFERS_MIN 2
 
 typedef enum {
     UCC_TL_DPU_UCP_REQUEST_ACTIVE,
@@ -43,7 +44,8 @@ extern ucc_tl_dpu_iface_t ucc_tl_dpu;
 
 typedef struct ucc_tl_dpu_lib_config {
     ucc_tl_lib_config_t super;
-    uint64_t            pipeline_block_size;
+    uint64_t            pipeline_buffer_size;
+    uint32_t            pipeline_buffers;
 } ucc_tl_dpu_lib_config_t;
 
 typedef struct ucc_tl_dpu_context_config {
@@ -71,12 +73,12 @@ UCC_CLASS_DECLARE(ucc_tl_dpu_context_t, const ucc_base_context_params_t *,
                   const ucc_base_config_t *);
 
 typedef struct ucc_tl_dpu_put_sync_t {
-    unsigned int             coll_id;
-    unsigned int             count_out;
-    unsigned int             count_total;
     ucc_datatype_t           dtype;
     ucc_reduction_op_t       op;
     ucc_coll_type_t          coll_type;
+    unsigned int             count_total;
+    unsigned int             count_out;
+    unsigned int             coll_id;
 } ucc_tl_dpu_put_sync_t;
 
 typedef struct ucc_tl_dpu_get_sync_t {
@@ -115,9 +117,9 @@ typedef struct ucc_tl_dpu_team {
     ucp_mem_h             get_sync_memh;
     uint64_t              rem_ctrl_seg;
     ucp_rkey_h            rem_ctrl_seg_key;
-    uint64_t              rem_data_in;
+    uint64_t              *rem_data_in;
     ucp_rkey_h            rem_data_in_key;
-    uint64_t              rem_data_out;
+    uint64_t              *rem_data_out;
     ucp_rkey_h            rem_data_out_key;
     ucc_tl_dpu_request_t  *send_req[3];
     ucc_tl_dpu_request_t  *recv_req[2];
@@ -131,7 +133,9 @@ typedef struct ucc_tl_dpu_task_req_t {
     ucc_tl_dpu_put_request_t *put_reqs;
     ucc_tl_dpu_get_request_t *get_reqs;
     uint32_t                 put_data_count;
+    uint32_t                 put_bf_idx;
     uint32_t                 get_data_count;
+    uint32_t                 get_bf_idx;
 } ucc_tl_dpu_task_req_t;
 
 typedef struct ucc_tl_dpu_task {
@@ -143,6 +147,7 @@ typedef struct ucc_tl_dpu_task {
     ucc_tl_dpu_task_req_t    task_reqs;
     size_t                   block_count;
     size_t                   block_data_size;
+    uint32_t                 pipeline_buffers;
 } ucc_tl_dpu_task_t;
 
 typedef struct ucc_tl_dpu_config {

@@ -14,13 +14,19 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_lib_t, const ucc_base_lib_params_t *params,
         ucc_derived_of(config, ucc_tl_dpu_lib_config_t);
     UCC_CLASS_CALL_SUPER_INIT(ucc_tl_lib_t, &ucc_tl_dpu.super, &tl_dpu_config->super);
     memcpy(&self->cfg, tl_dpu_config, sizeof(*tl_dpu_config));
-    if (tl_dpu_config->pipeline_block_size > 0) {
-        self->cfg.pipeline_block_size =
-            ucc_max(tl_dpu_config->pipeline_block_size & (-8),
-                    UCC_TL_DPU_PIPELINE_BLOCK_SIZE_MIN);
+    if (tl_dpu_config->pipeline_buffer_size > 0) {
+        self->cfg.pipeline_buffer_size =
+            ucc_max(tl_dpu_config->pipeline_buffer_size & (-8),
+                UCC_TL_DPU_PIPELINE_BLOCK_SIZE_MIN);
     }
     else {
-        self->cfg.pipeline_block_size = ULONG_MAX;
+        self->cfg.pipeline_buffer_size = ULONG_MAX;
+    }
+    if (tl_dpu_config->pipeline_buffers > 2) {
+        // self->cfg.pipeline_buffer =
+        //     ucc_max(tl_dpu_config->pipeline_buffers & (-2),
+        //         UCC_TL_DPU_PIPELINE_BUFFERS_MIN);
+        self->cfg.pipeline_buffers = 2; /* Currently we only support two */
     }
     tl_info(&self->super, "initialized lib object: %p", self);
     return UCC_OK;

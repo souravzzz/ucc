@@ -23,6 +23,10 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
                             recv_req_param;
     int tc_poll = UCC_TL_DPU_TC_POLL, i;
     size_t total_rkey_size = 0;
+    uint64_t pipeline_buffer_size =
+        UCC_TL_DPU_TEAM_LIB(self)->cfg.pipeline_buffer_size;
+    size_t   pipeline_buffers =
+        UCC_TL_DPU_TEAM_LIB(self)->cfg.pipeline_buffers;
     
     self->coll_id   = 1;
     self->size      = params->params.oob.participants;
@@ -30,7 +34,6 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     self->status    = UCC_OPERATION_INITIALIZED;
     self->conn_buf  = ucc_malloc(sizeof(ucc_tl_dpu_conn_buf_t),
                         "Allocate connection buffer");
-
     self->conn_buf->mmap_params.field_mask =
                                 UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
                                 UCP_MEM_MAP_PARAM_FIELD_LENGTH;
@@ -51,6 +54,9 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     if (UCC_OK != ucc_status) {
         goto err;
     }
+
+    self->rem_data_in = ucc_calloc(pipeline_buffers, sizeof(uint64_t));
+    self->rem_data_out = ucc_calloc(pipeline_buffers, sizeof(uint64_t));
 
     send_req_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
                                   UCP_OP_ATTR_FIELD_DATATYPE;
@@ -162,7 +168,11 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     if (UCC_OK != ucc_status) {
         goto err;
     }
-    self->rem_data_in = self->conn_buf->rem_addresses[1];
+
+    self->rem_data_in[0] = self->conn_buf->rem_addresses[1];
+    for (i = 1; i < pipeline_buffers; i++) {
+        self->rem_data_in[i] = self->rem_data_in[i-1] + pipeline_buffer_size;
+    }
 
     ucc_status = ucs_status_to_ucc_status(
         ucp_ep_rkey_unpack(ctx->ucp_ep,
@@ -172,7 +182,11 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     if (UCC_OK != ucc_status) {
         goto err;
     }
-    self->rem_data_out = self->conn_buf->rem_addresses[2];
+
+    self->rem_data_out[0] = self->conn_buf->rem_addresses[2];
+    for (i = 1; i < pipeline_buffers; i++) {
+        self->rem_data_out[i] = self->rem_data_out[i-1] + pipeline_buffer_size;
+    }
 
     ucc_status = ucs_status_to_ucc_status(
         ucp_ep_rkey_unpack(ctx->ucp_ep,
@@ -243,6 +257,9 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
     ucp_rkey_destroy(team->rem_data_out_key);
     ucp_mem_unmap(ctx->ucp_context, team->get_sync_memh);
 
+    ucc_free(team->rem_data_in);
+    ucc_free(team->rem_data_out);
+
     UCC_CLASS_DELETE_FUNC_NAME(ucc_tl_dpu_team_t)(tl_team);
 
     return UCC_OK;
@@ -255,6 +272,10 @@ ucc_status_t ucc_tl_dpu_team_create_test(ucc_base_team_t *tl_team)
     ucc_status_t            ucc_status = UCC_OK;
     int                     tc_poll = UCC_TL_DPU_TC_POLL, i = 0;
     size_t                  total_rkey_size;
+    uint64_t pipeline_buffer_size =
+        UCC_TL_DPU_TEAM_LIB(team)->cfg.pipeline_buffer_size;
+    size_t pipeline_buffers =
+        UCC_TL_DPU_TEAM_LIB(team)->cfg.pipeline_buffers;
     ucp_request_param_t     recv_req_param;
 
     if (UCC_OK == team->status) {
@@ -346,7 +367,10 @@ ucc_status_t ucc_tl_dpu_team_create_test(ucc_base_team_t *tl_team)
     if (UCC_OK != ucc_status) {
         goto err;
     }
-    team->rem_data_in = team->conn_buf->rem_addresses[1];
+    team->rem_data_in[0] = team->conn_buf->rem_addresses[1];
+    for (i = 1; i < pipeline_buffers; i++) {
+        team->rem_data_in[i] = team->rem_data_in[i-1] + pipeline_buffer_size;
+    }
 
     ucc_status = ucs_status_to_ucc_status(
         ucp_ep_rkey_unpack(ctx->ucp_ep,
@@ -356,7 +380,10 @@ ucc_status_t ucc_tl_dpu_team_create_test(ucc_base_team_t *tl_team)
     if (UCC_OK != ucc_status) {
         goto err;
     }
-    team->rem_data_out = team->conn_buf->rem_addresses[2];
+    team->rem_data_out[0] = team->conn_buf->rem_addresses[2];
+    for (i = 1; i < pipeline_buffers; i++) {
+        team->rem_data_out[i] = team->rem_data_out[i-1] + pipeline_buffer_size;
+    }
 
     ucc_status = ucs_status_to_ucc_status(
         ucp_ep_rkey_unpack(ctx->ucp_ep,

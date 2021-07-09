@@ -17,7 +17,12 @@ static ucc_config_field_t ucc_tl_dpu_lib_config_table[] = {
 
     {"PIPELINE_BLOCK_SIZE", "0",
      "Pipeline block size in bytes. (auto round-down to multiple of 8)",
-     ucc_offsetof(ucc_tl_dpu_lib_config_t, pipeline_block_size),
+     ucc_offsetof(ucc_tl_dpu_lib_config_t, pipeline_buffer_size),
+     UCC_CONFIG_TYPE_UINT},
+
+     {"PIPELINE_BUFFERS", "2",
+     "Max number of pipeline buffers. (auto round-down to multiple of 2)",
+     ucc_offsetof(ucc_tl_dpu_lib_config_t, pipeline_buffers),
      UCC_CONFIG_TYPE_UINT},
 
     {NULL}};
@@ -37,12 +42,6 @@ static ucs_config_field_t ucc_tl_dpu_context_config_table[] = {
      ucc_offsetof(ucc_tl_dpu_context_config_t, server_port),
      UCC_CONFIG_TYPE_UINT
     },
-
-    // {"ENABLE", "0",
-    //  "Assume server is running on BF",
-    //  ucc_offsetof(ucc_tl_dpu_context_config_t, use_dpu),
-    //  UCC_CONFIG_TYPE_UINT
-    // },
 
     {"HOST_DPU_LIST", "",
      "A host-dpu list used to identify the DPU IP",

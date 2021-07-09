@@ -93,35 +93,17 @@ ucc_status_t ucc_tl_dpu_req_check(ucc_tl_dpu_team_t *team,
 }
 
 static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
-    ucc_tl_dpu_context_t *ctx, ucc_tl_dpu_team_t *team,
-    void *sbuf, size_t offset, size_t count, size_t data_size,
+    ucc_tl_dpu_context_t *ctx, ucc_tl_dpu_team_t *team, void *sbuf,
+    size_t offset, uint32_t bf_idx, size_t count, size_t data_size,
     ucp_request_param_t *req_param)
 {
-    int found = 0;
-    ucc_tl_dpu_put_request_t *put_req = task->task_reqs.put_reqs;
-
-    if (NULL == put_req) {
-        task->task_reqs.put_reqs = put_req =
-            ucc_calloc(1, sizeof(ucc_tl_dpu_put_request_t));
-    }
-
-    /* find empty req */
-    do {
-        if (NULL == put_req->data_req) {
-            found++;
-            break;
-        }
-    } while (NULL != put_req->next);
-
-    if (!found) {
-        put_req->next = ucc_calloc(1, sizeof(ucc_tl_dpu_put_request_t));
-        put_req = put_req->next;
-    }
+    unsigned int buff_idx = task->task_reqs.put_bf_idx;
+    ucc_tl_dpu_put_request_t *put_req = &task->task_reqs.put_reqs[buff_idx];
 
     ucp_worker_fence(ctx->ucp_worker);
     put_req->data_req =
         ucp_put_nbx(ctx->ucp_ep, ((char *)sbuf + offset), data_size,
-                    team->rem_data_in + offset, team->rem_data_in_key,
+                    team->rem_data_in[bf_idx], team->rem_data_in_key,
                     req_param);
     if (ucc_tl_dpu_req_check(team, put_req->data_req) != UCC_OK) {
         return UCC_ERR_NO_MESSAGE;
@@ -146,33 +128,15 @@ static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
 
 static ucc_status_t ucc_tl_dpu_issue_get(
     ucc_tl_dpu_task_t *task, ucc_tl_dpu_context_t *ctx,
-    ucc_tl_dpu_team_t *team, void *rbuf, size_t offset, size_t data_size,
-    ucp_request_param_t *req_param)
+    ucc_tl_dpu_team_t *team, void *rbuf, size_t offset,
+    uint32_t bf_idx, size_t data_size, ucp_request_param_t *req_param)
 {
-    int found = 0;
-    ucc_tl_dpu_get_request_t *get_req = task->task_reqs.get_reqs;
-
-    if (NULL == get_req) {
-        task->task_reqs.get_reqs = get_req =
-            ucc_calloc(1, sizeof(ucc_tl_dpu_get_request_t));
-    }
-
-    /* find empty req */
-    do {
-        if (NULL == get_req->data_req) {
-            found++;
-            break;
-        }
-    } while (NULL != get_req->next);
-
-    if (!found) {
-        get_req->next = ucc_calloc(1, sizeof(ucc_tl_dpu_get_request_t));
-        get_req = get_req->next;
-    }
+    unsigned int buff_idx = task->task_reqs.get_bf_idx;
+    ucc_tl_dpu_get_request_t *get_req = &task->task_reqs.get_reqs[buff_idx];
 
     get_req->data_req =
         ucp_get_nbx(ctx->ucp_ep, ((char *)rbuf + offset), data_size,
-                    team->rem_data_out + offset, team->rem_data_out_key,
+                    team->rem_data_out[bf_idx], team->rem_data_out_key,
                     req_param);
     if (ucc_tl_dpu_req_check(team, get_req->data_req) != UCC_OK) {
         return UCC_ERR_NO_MESSAGE;
@@ -242,20 +206,22 @@ ucc_status_t ucc_tl_dpu_allreduce_progress(ucc_coll_task_t *coll_task)
     size_t                  block_data_size;
     ucc_status_t            status;
 
-    // if (UCC_IS_INPLACE(task->args)) {
-    //     sbuf = rbuf;
-    // }
+    if (task->task_reqs.put_bf_idx == task->task_reqs.get_bf_idx &&
+        task->task_reqs.put_data_count < count_total) {
 
-    if (task->task_reqs.put_data_count < count_total) {
         block_count = ucc_min(block_count, count_rem);
         block_data_size = block_count * dt_size;
+
         status = ucc_tl_dpu_issue_put(task, ctx, team, sbuf,
                     task->task_reqs.put_data_count * dt_size /*offset */,
+                    task->task_reqs.put_bf_idx /* buffer idx */,
                     block_count, block_data_size, req_param);
         if (UCC_OK != status) {
             goto err;
         }
         task->task_reqs.put_data_count += block_count;
+        task->task_reqs.put_bf_idx = (task->task_reqs.put_bf_idx + 1) %
+            task->pipeline_buffers;
     }
 
     if (team->coll_id == (team->get_sync.coll_id + 1) &&
@@ -265,11 +231,14 @@ ucc_status_t ucc_tl_dpu_allreduce_progress(ucc_coll_task_t *coll_task)
         block_data_size = block_count * dt_size;
         status = ucc_tl_dpu_issue_get(task, ctx, team, rbuf,
                     task->task_reqs.get_data_count * dt_size /*offset*/,
+                    task->task_reqs.get_bf_idx /* buffer idx */,
                     block_data_size, req_param);
         if (UCC_OK != status) {
             goto err;
         }
         task->task_reqs.get_data_count += block_count;
+        task->task_reqs.get_bf_idx = (task->task_reqs.get_bf_idx + 1) %
+            task->pipeline_buffers;
     }
 
     status = ucc_tl_dpu_check_progress(task, ctx);
@@ -303,7 +272,7 @@ ucc_status_t ucc_tl_dpu_allreduce_start(ucc_coll_task_t *coll_task)
     }
     
     block_count = task->block_count = ucc_min(
-        (UCC_TL_DPU_TEAM_LIB(team)->cfg.pipeline_block_size) / dt_size,
+        (UCC_TL_DPU_TEAM_LIB(team)->cfg.pipeline_buffer_size) / dt_size,
         count_total);
     block_data_size = task->block_data_size = task->block_count * dt_size;
 
@@ -320,25 +289,16 @@ ucc_status_t ucc_tl_dpu_allreduce_start(ucc_coll_task_t *coll_task)
     req_param.memory_type   = ucc_memtype_to_ucs[mtype];
     */
 
-   /* Nothing to check , first put */
-    status = ucc_tl_dpu_issue_put(task, ctx, team, sbuf, 0 /*offset*/,
+   /* First put */
+    status = ucc_tl_dpu_issue_put(task, ctx, team, sbuf,
+                0 /*offset*/, 0 /* bf idx */,
                 block_count, block_data_size, req_param);
     if (UCC_OK != status) {
         goto put_err;
     }
     task->task_reqs.put_data_count += block_count;
-
-    if (team->coll_id == (team->get_sync.coll_id + 1) &&
-        task->task_reqs.get_data_count < team->get_sync.count_serviced) {
-        block_count = ucc_min(block_count, team->get_sync.count_serviced);
-        block_data_size = block_count * dt_size;
-        status = ucc_tl_dpu_issue_get(task, ctx, team, rbuf,
-                    0 /*offset*/, block_data_size, req_param);
-        if (UCC_OK != status) {
-            goto get_err;
-        }
-        task->task_reqs.get_data_count += block_count;
-    }
+    task->task_reqs.put_bf_idx =
+        (task->task_reqs.put_bf_idx + 1) % task->pipeline_buffers;
 
     status = ucc_tl_dpu_check_progress(task, ctx);
     task->super.super.status = status;
@@ -353,12 +313,14 @@ ucc_status_t ucc_tl_dpu_allreduce_start(ucc_coll_task_t *coll_task)
 
     return UCC_OK;
 put_err:
-get_err:
     return UCC_ERR_NO_MESSAGE;
 }
 
 ucc_status_t ucc_tl_dpu_allreduce_init(ucc_tl_dpu_task_t *task)
 {
+    ucc_coll_args_t     *coll_args = &task->args;
+    ucc_tl_dpu_team_t   *team      = task->team;
+
     if (task->args.mask & UCC_COLL_ARGS_FIELD_USERDEFINED_REDUCTIONS) {
         tl_error(UCC_TL_TEAM_LIB(task->team),
                  "userdefined reductions are not supported yet");
@@ -371,8 +333,30 @@ ucc_status_t ucc_tl_dpu_allreduce_init(ucc_tl_dpu_task_t *task)
         return UCC_ERR_NOT_SUPPORTED;
     }
 
+    /* Set sync information for DPU */
+    task->put_sync.coll_id           = team->coll_id;
+    task->put_sync.dtype             = coll_args->src.info.datatype;
+    task->put_sync.count_total       = coll_args->src.info.count;
+    task->put_sync.count_out         = 0;
+    task->put_sync.op                = coll_args->reduce.predefined_op;
+    task->put_sync.coll_type         = coll_args->coll_type;
+    task->get_sync.coll_id           = team->coll_id;
+    task->get_sync.count_serviced    = 0;
+    task->pipeline_buffers           =
+        (UCC_TL_DPU_TEAM_LIB(task->team)->cfg.pipeline_buffers);
+
+    /* Initialize all request stuff for pipelining */
+    memset(&task->task_reqs.req_param, 0, sizeof(ucp_request_param_t));
+    task->task_reqs.put_reqs         = ucc_calloc(task->pipeline_buffers, sizeof(ucc_tl_dpu_put_request_t));
+    task->task_reqs.get_reqs         = ucc_calloc(task->pipeline_buffers, sizeof(ucc_tl_dpu_get_request_t));
+    task->task_reqs.put_data_count   = 0;
+    task->task_reqs.get_data_count   = 0;
+    task->task_reqs.put_bf_idx       = 0;
+    task->task_reqs.get_bf_idx       = 0;
+
     task->super.post     = ucc_tl_dpu_allreduce_start;
     task->super.progress = ucc_tl_dpu_allreduce_progress;
+
     return UCC_OK;
 }
 
@@ -384,9 +368,9 @@ static ucc_status_t ucc_tl_dpu_coll_finalize(ucc_coll_task_t *coll_task)
     return UCC_OK;
 }
 
-ucc_status_t ucc_tl_dpu_coll_init(ucc_base_coll_args_t *coll_args,
-                                         ucc_base_team_t      *team,
-                                         ucc_coll_task_t     **task_h)
+ucc_status_t ucc_tl_dpu_coll_init(ucc_base_coll_args_t      *coll_args,
+                                         ucc_base_team_t    *team,
+                                         ucc_coll_task_t    **task_h)
 {
     ucc_tl_dpu_team_t    *tl_team = ucc_derived_of(team, ucc_tl_dpu_team_t);
     ucc_tl_dpu_task_t    *task    = ucc_tl_dpu_alloc_task();
@@ -396,23 +380,6 @@ ucc_status_t ucc_tl_dpu_coll_init(ucc_base_coll_args_t *coll_args,
     tl_info(team->context->lib, "task %p initialized", task);
 
     memcpy(&task->args, &coll_args->args, sizeof(ucc_coll_args_t));
-
-    /* Set sync information for DPU */
-    task->put_sync.coll_id           = tl_team->coll_id;
-    task->put_sync.dtype             = coll_args->args.src.info.datatype;
-    task->put_sync.count_total       = coll_args->args.src.info.count;
-    task->put_sync.count_out          = 0;
-    task->put_sync.op                = coll_args->args.reduce.predefined_op;
-    task->put_sync.coll_type         = coll_args->args.coll_type;
-    task->get_sync.coll_id           = tl_team->coll_id;
-    task->get_sync.count_serviced    = 0;
-
-    /* Initialize all request stuff for pipelining */
-    memset(&task->task_reqs.req_param, 0, sizeof(ucp_request_param_t));
-    task->task_reqs.put_reqs         = NULL;
-    task->task_reqs.get_reqs         = NULL;
-    task->task_reqs.put_data_count   = 0;
-    task->task_reqs.get_data_count   = 0;
 
     /* Misc init stuff */
     task->team                       = tl_team;

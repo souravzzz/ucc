@@ -17,12 +17,19 @@
 #define CORES 8
 #define MAX_THREADS 128
 
+#define DPU_PIPELINE_BUFFER_SIZE (4 * 1024 * 1024)
+#define DPU_PIPELINE_BUFFERS     (2)
+
 typedef struct {
-    pthread_t id;
-    int idx, nthreads;
-    dpu_ucc_comm_t comm;
-    dpu_hc_t *hc;
-    dpu_get_sync_t ar_sync;
+    pthread_t       id;
+    int             idx;
+    int             nthreads;
+    dpu_ucc_comm_t  comm;
+    dpu_hc_t        *hc;
+    unsigned long   pipeline_buffer_size;
+    unsigned int    pipeline_buffers;
+    unsigned int    buf_idx;
+    dpu_get_sync_t  ar_sync;
 } thread_ctx_t;
 
 /* thread accisble data - split reader/writer */
@@ -41,6 +48,7 @@ void *dpu_worker(void *arg)
 {
     // fprintf (stdout, "sleeping %d\n", getpid());
     // sleep(20);
+
     thread_ctx_t *ctx = (thread_ctx_t*)arg;
     int places = CORES/ctx->nthreads;
     int i = 0, j = 0, inprogress = 0;
@@ -86,6 +94,7 @@ void *dpu_worker(void *arg)
         /* Process all data */
         do {
             thread_sub_sync[ctx->idx].g_coll_id++;
+
             if (ctx->idx > 0) { /* sub threads */
                 while (thread_sub_sync[ctx->idx].l_coll_id < thread_sub_sync[ctx->idx].g_coll_id) {
                     /* busy wait */
@@ -128,7 +137,9 @@ void *dpu_worker(void *arg)
             int dt_size = dpu_ucc_dt_size(tmp_sync.dtype);
 
             block = count / ctx->nthreads;
-            offset = ctx->ar_sync.count_serviced + block * ctx->idx;
+            offset = (ctx->buf_idx % ctx->pipeline_buffers) * ctx->pipeline_buffer_size +
+                block * ctx->idx;
+
             if(ctx->idx < (count % ctx->nthreads)) {
                 offset += ctx->idx;
                 block++;
@@ -162,13 +173,13 @@ void *dpu_worker(void *arg)
                 ucc_context_progress(ctx->comm.ctx);
             }
             UCC_CHECK(ucc_collective_finalize(request));
+            ctx->buf_idx++;
 
-            thread_sub_sync[ctx->idx].g_coll_id++;
             ctx->ar_sync.count_serviced += count;
+            thread_sub_sync[ctx->idx].g_coll_id++;
 
             if (ctx->idx > 0) {
-
-                /* wait to be released into next iteration and updated count_serviced */
+                /* wait to be released into next iteration */
                 while (thread_sub_sync[ctx->idx].l_coll_id < thread_sub_sync[ctx->idx].g_coll_id) {
                     /* busy wait */
                 }
@@ -193,8 +204,6 @@ void *dpu_worker(void *arg)
 
         thread_main_sync[ctx->idx].l_coll_id++;
     }
-
-//     fprintf(stderr, "ctx->itt = %u\n", ctx->itt);
     return NULL;
 }
 
@@ -202,11 +211,16 @@ int main(int argc, char **argv)
 {
 //     fprintf (stderr, "%s\n", __FUNCTION__);
 //     sleep(20);
+    unsigned long    pipeline_buffer_size = DPU_PIPELINE_BUFFER_SIZE;
+    unsigned int     pipeline_buffers = DPU_PIPELINE_BUFFERS;
+    int              nthreads = 0;
+    int              i = 0;
+    thread_ctx_t     *tctx_pool = NULL;
+    dpu_hc_t         *hc = NULL;
+    char             *env = NULL;
 
-    int nthreads = 0, i;
-    thread_ctx_t *tctx_pool = NULL;
     dpu_ucc_global_t ucc_glob;
-    dpu_hc_t hc_b, *hc = &hc_b;
+    dpu_hc_t         hc_b;
 
     if (argc < 2 ) {
         printf("Need thread # as an argument\n");
@@ -218,10 +232,20 @@ int main(int argc, char **argv)
         return 1;
     }
     printf("DPU daemon: Running with %d threads\n", nthreads);
+
+    env = getenv("DPU_PIPELINE_BUFFER_SIZE");
+    if (NULL != env) {
+        pipeline_buffer_size = atol(env);
+    }
+
+    env = getenv("DPU_PIPELINE_BUFFERS");
+    if (NULL != env) {
+        pipeline_buffers = atoi(env);
+    }
+
     tctx_pool = calloc(nthreads, sizeof(*tctx_pool));
     UCC_CHECK(dpu_ucc_init(argc, argv, &ucc_glob));
 
-//     thread_sync = calloc(nthreads, sizeof(*thread_sync));
     thread_main_sync = aligned_alloc(64, nthreads * sizeof(*thread_main_sync));
     memset(thread_main_sync, 0, nthreads * sizeof(*thread_main_sync));
 
@@ -230,17 +254,21 @@ int main(int argc, char **argv)
 
     memset(&tmp_sync, 0, sizeof(tmp_sync));
 
+    hc = &hc_b;
+
     dpu_hc_init(hc);
     dpu_hc_accept(hc);
 
     for(i = 0; i < nthreads; i++) {
-//         printf("Thread %d spawned!\n", i);
         UCC_CHECK(dpu_ucc_alloc_team(&ucc_glob, &tctx_pool[i].comm));
         tctx_pool[i].idx = i;
         tctx_pool[i].nthreads = nthreads;
         tctx_pool[i].hc       = hc;
         tctx_pool[i].ar_sync.coll_id = 0;
         tctx_pool[i].ar_sync.count_serviced = 0;
+        tctx_pool[i].pipeline_buffers = pipeline_buffers;
+        tctx_pool[i].pipeline_buffer_size = pipeline_buffer_size;
+        tctx_pool[i].buf_idx = 0;
 
         if (i < nthreads - 1) {
             pthread_create(&tctx_pool[i].id, NULL, dpu_worker,
