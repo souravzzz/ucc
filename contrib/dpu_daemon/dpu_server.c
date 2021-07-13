@@ -24,17 +24,59 @@ typedef struct {
     unsigned int itt;
 } thread_ctx_t;
 
-/* thread accisble data - split reader/writer */
+/* thread accessible data - split reader/writer */
 typedef struct {
-    volatile unsigned long g_itt;  /* first cache line */
-    volatile unsigned long pad[3]; /* pad to 64bytes */
-    volatile unsigned long l_itt;  /* second cache line */
+    volatile unsigned long todo;    /* first cache line */
+    volatile unsigned long pad1[3]; /* pad to 64bytes */
+    volatile unsigned long done;    /* second cache line */
     volatile unsigned long pad2[3]; /* pad to 64 bytes */
 } thread_sync_t;
 
 static thread_sync_t *thread_sync = NULL;
 
- void dpu_coll_init_allreduce(thread_ctx_t *ctx, ucc_coll_req_h *request) {
+static void dpu_thread_set_affinity(thread_ctx_t *ctx)
+{
+    int i = 0;
+    int places = CORES/ctx->nthreads;
+    cpu_set_t cpuset;
+    pthread_t thread = pthread_self();
+    
+    CPU_ZERO(&cpuset);
+	for (i = 0; i < places; i++) {
+		CPU_SET((ctx->idx*places)+i, &cpuset);
+	}
+    pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset);
+}
+
+static void dpu_wait_for_work(thread_ctx_t *ctx)
+{
+    int i;
+    if (!ctx->idx) {
+        ctx->itt++;
+        dpu_hc_wait(ctx->hc, ctx->itt);
+        for(i=0; i<ctx->nthreads; i++) {
+            thread_sync[i].done = 0;
+            thread_sync[i].todo = 1;
+        }
+    }
+    while(!thread_sync[ctx->idx].todo);
+}
+
+static void dpu_mark_work_done(thread_ctx_t *ctx)
+{
+    int i;
+    thread_sync[ctx->idx].todo = 0;
+    thread_sync[ctx->idx].done = 1;
+    if (!ctx->idx) {
+        for(i=0; i<ctx->nthreads; i++) {
+            while(!thread_sync[i].done);
+        }
+        dpu_hc_reply(ctx->hc, ctx->itt);
+    }
+}
+
+void dpu_coll_init_allreduce(thread_ctx_t *ctx, ucc_coll_req_h *request)
+{
     size_t count = dpu_hc_get_count_total(ctx->hc);
     size_t dt_size = dpu_ucc_dt_size(dpu_hc_get_dtype(ctx->hc));
     size_t block = count / ctx->nthreads;
@@ -70,7 +112,8 @@ static thread_sync_t *thread_sync = NULL;
     UCC_CHECK(ucc_collective_init(&coll_args, request, ctx->comm.team));
 }
 
- void dpu_coll_init_alltoall(thread_ctx_t *ctx, ucc_coll_req_h *request) {
+void dpu_coll_init_alltoall(thread_ctx_t *ctx, ucc_coll_req_h *request)
+{
     /* Multithreading not supported */
     if(ctx->idx > 0) {
         *request = NULL;
@@ -104,36 +147,12 @@ static thread_sync_t *thread_sync = NULL;
 void *dpu_worker(void *arg)
 {
     thread_ctx_t *ctx = (thread_ctx_t*)arg;
-    int places = CORES/ctx->nthreads;
-    int i = 0, j = 0;
-
     ucc_coll_req_h request;
-    cpu_set_t cpuset;
-    pthread_t thread;
 
-    thread = pthread_self();
-
-    CPU_ZERO(&cpuset);
-    
-	for (i = 0; i < places; i++) {
-		CPU_SET((ctx->idx*places)+i, &cpuset);
-	}
-
-    i = pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset);
+    dpu_thread_set_affinity(ctx);
 
     while(1) {
-        ctx->itt++;
-        if (ctx->idx > 0) {
-            while (thread_sync[ctx->idx].g_itt < ctx->itt) {
-                /* busy wait */
-            }
-        }
-        else {
-            dpu_hc_wait(ctx->hc, ctx->itt);
-            for (i = 0; i < ctx->nthreads; i++) {
-                thread_sync[i].g_itt++;
-            }
-        }
+        dpu_wait_for_work(ctx);
         
         ucc_coll_type_t coll_type = dpu_hc_get_coll_type(ctx->hc);
         //fprintf(stderr, "Requested coll type: %d\n", coll_type);
@@ -156,28 +175,9 @@ void *dpu_worker(void *arg)
             }
             UCC_CHECK(ucc_collective_finalize(request));
         }
-        thread_sync[ctx->idx].l_itt++;
 
-        int ready = 0;
-        if (ctx->idx == 0) {
-            while (ready != ctx->nthreads) {
-                ready = 0;
-                for (i = 0; i < ctx->nthreads; i++) {
-                    if (thread_sync[i].l_itt == ctx->itt) {
-                        ready++;
-                    }
-                    else {
-                        break;
-                    }
-                }
-            }
-    
-        
-            dpu_hc_reply(ctx->hc, ctx->itt);
-        }
+        dpu_mark_work_done(ctx);
     }
-
-//     fprintf(stderr, "ctx->itt = %u\n", ctx->itt);
 
     return NULL;
 }
