@@ -133,9 +133,10 @@ typedef struct ucc_tl_dpu_task_req_t {
     ucc_tl_dpu_put_request_t *put_reqs;
     ucc_tl_dpu_get_request_t *get_reqs;
     uint32_t                 put_data_count;
-    uint32_t                 put_bf_idx;
     uint32_t                 get_data_count;
+    uint32_t                 put_bf_idx;
     uint32_t                 get_bf_idx;
+    uint32_t                 puts_in_flight;
 } ucc_tl_dpu_task_req_t;
 
 typedef struct ucc_tl_dpu_task {
