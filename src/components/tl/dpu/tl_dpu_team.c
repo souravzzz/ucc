@@ -233,6 +233,7 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
     ucp_request_param_t         req_param;
  
     hangup.coll_id      = team->coll_id;
+    hangup.coll_type    = UCC_COLL_TYPE_LAST;
     hangup.dtype        = UCC_DT_USERDEFINED;
     hangup.op           = UCC_OP_USERDEFINED;
     hangup.count_out    = 0;
@@ -242,6 +243,7 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
     req_param.datatype     = ucp_dt_make_contig(1);
     req_param.cb.send      = ucc_tl_dpu_send_handler_nbx;
  
+    tl_info(ctx->super.super.lib, "sending hangup to dpu team");
     hangup_req = ucp_put_nbx(ctx->ucp_ep, &hangup, sizeof(hangup),
                              team->rem_ctrl_seg, team->rem_ctrl_seg_key,
                              &req_param);

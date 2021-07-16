@@ -44,6 +44,73 @@ static thread_sync_t *thread_main_sync = NULL;
 static thread_sync_t *thread_sub_sync = NULL;
 dpu_put_sync_t tmp_sync;
 
+void dpu_coll_init_allreduce(thread_ctx_t *ctx, ucc_coll_req_h *request)
+{
+    size_t count = tmp_sync.count_in - ctx->ar_sync.count_serviced;
+    size_t dt_size = dpu_ucc_dt_size(tmp_sync.dtype);
+
+    size_t block = count / ctx->nthreads;
+    size_t offset = (ctx->buf_idx % ctx->pipeline_buffers) * ctx->pipeline_buffer_size + block * ctx->idx;
+
+    if(ctx->idx < (count % ctx->nthreads)) {
+        offset += ctx->idx;
+        block++;
+    } else {
+        offset += (count % ctx->nthreads);
+    }
+    
+    ucc_coll_args_t coll = {
+        .coll_type = UCC_COLL_TYPE_ALLREDUCE,
+        .mask      = UCC_COLL_ARGS_FIELD_PREDEFINED_REDUCTIONS,
+        .src.info = {
+            .buffer   = ctx->hc->mem_segs.put.base + offset * dt_size,
+            .count    = block,
+            .datatype = tmp_sync.dtype,
+            .mem_type = UCC_MEMORY_TYPE_HOST,
+        },
+        .dst.info = {
+            .buffer     = ctx->hc->mem_segs.get.base + offset * dt_size,
+            .count      = block,
+            .datatype   = tmp_sync.dtype,
+            .mem_type = UCC_MEMORY_TYPE_HOST,
+        },
+        .reduce = {
+            .predefined_op = tmp_sync.op,
+        },
+    };
+
+    UCC_CHECK(ucc_collective_init(&coll, request, ctx->comm.team));
+}
+
+void dpu_coll_init_alltoall(thread_ctx_t *ctx, ucc_coll_req_h *request)
+{
+    size_t count = tmp_sync.count_total;
+
+    /* Multithreading not supported */
+    if(ctx->idx > 0) {
+        *request = NULL;
+        return;
+    }
+    
+    ucc_coll_args_t coll = {
+        .coll_type = UCC_COLL_TYPE_ALLTOALL,
+        .src.info = {
+            .buffer   = ctx->hc->mem_segs.put.base,
+            .count    = count,
+            .datatype = tmp_sync.dtype,
+            .mem_type = UCC_MEMORY_TYPE_HOST,
+        },
+        .dst.info = {
+            .buffer     = ctx->hc->mem_segs.get.base,
+            .count      = count,
+            .datatype   = tmp_sync.dtype,
+            .mem_type = UCC_MEMORY_TYPE_HOST,
+        },
+    };
+
+    UCC_CHECK(ucc_collective_init(&coll, request, ctx->comm.team));
+}
+
 void *dpu_worker(void *arg)
 {
     // fprintf (stdout, "sleeping %d\n", getpid());
@@ -86,8 +153,8 @@ void *dpu_worker(void *arg)
         }
 
         /* Hang up? */
-        if (lsync->op    == UCC_OP_USERDEFINED &&
-            lsync->dtype == UCC_DT_USERDEFINED) {
+        fprintf(stderr, "coll id: %d, type: %d\n", lsync->coll_id, lsync->coll_type);
+        if (lsync->coll_type == UCC_COLL_TYPE_LAST) {
             break;
         }
 
@@ -131,51 +198,28 @@ void *dpu_worker(void *arg)
                 }
             }
 
-            int offset, block;
-            int count = tmp_sync.count_in - ctx->ar_sync.count_serviced;
-            int ready = 0;
-            int dt_size = dpu_ucc_dt_size(tmp_sync.dtype);
-
-            block = count / ctx->nthreads;
-            offset = (ctx->buf_idx % ctx->pipeline_buffers) * ctx->pipeline_buffer_size +
-                block * ctx->idx;
-
-            if(ctx->idx < (count % ctx->nthreads)) {
-                offset += ctx->idx;
-                block++;
+            ucc_coll_type_t coll_type = tmp_sync.coll_type;
+            if (coll_type == UCC_COLL_TYPE_ALLREDUCE) {
+                dpu_coll_init_allreduce(ctx, &request);
+            } else if (coll_type == UCC_COLL_TYPE_ALLTOALL) {
+                dpu_coll_init_alltoall(ctx, &request);
+            } else if (coll_type == UCC_COLL_TYPE_LAST) {
+                fprintf(stderr, "Received hangup, exiting loop\n");
+                break;
             } else {
-                offset += (count % ctx->nthreads);
+                fprintf(stderr, "Unsupported coll type: %d\n", coll_type);
             }
-            
-            ucc_coll_args_t coll = {
-                .mask      = UCC_COLL_ARGS_FIELD_PREDEFINED_REDUCTIONS,
-                .coll_type = UCC_COLL_TYPE_ALLREDUCE,
-                .src.info = {
-                    .buffer   = ctx->hc->mem_segs.put.base + offset * dt_size,
-                    .count    = block * dt_size,
-                    .datatype = tmp_sync.dtype,
-                    .mem_type = UCC_MEMORY_TYPE_HOST,
-                },
-                .dst.info = {
-                    .buffer     = ctx->hc->mem_segs.get.base + offset * dt_size,
-                    .count      = block * dt_size,
-                    .datatype   = tmp_sync.dtype,
-                    .mem_type = UCC_MEMORY_TYPE_HOST,
-                },
-                .reduce = {
-                    .predefined_op = tmp_sync.op,
-                },
-            };
 
-            UCC_CHECK(ucc_collective_init(&coll, &request, ctx->comm.team));
-            UCC_CHECK(ucc_collective_post(request));
-            while (UCC_OK != ucc_collective_test(request)) {
-                ucc_context_progress(ctx->comm.ctx);
+            if (request != NULL) {
+                UCC_CHECK(ucc_collective_post(request));
+                while (UCC_OK != ucc_collective_test(request)) {
+                    ucc_context_progress(ctx->comm.ctx);
+                }
+                UCC_CHECK(ucc_collective_finalize(request));
             }
-            UCC_CHECK(ucc_collective_finalize(request));
+
             ctx->buf_idx++;
-
-            ctx->ar_sync.count_serviced += count;
+            ctx->ar_sync.count_serviced = tmp_sync.count_in;
             thread_sub_sync[ctx->idx].g_coll_id++;
 
             if (ctx->idx > 0) {

@@ -113,10 +113,6 @@ static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
     uint32_t put_idx   = task->task_reqs.put_bf_idx;
     ucc_tl_dpu_put_request_t *put_req = &task->task_reqs.put_reqs[put_idx];
 
-    while (!ucc_tl_dpu_putq_available(task)) {
-        ucp_worker_progress(ctx->ucp_worker);
-    }
-
     put_req->data_req =
         ucp_put_nbx(ctx->ucp_ep, ((char *)sbuf + offset), data_size,
                     team->rem_data_in[put_idx], team->rem_data_in_key,
@@ -230,7 +226,7 @@ ucc_status_t ucc_tl_dpu_allreduce_progress(ucc_coll_task_t *coll_task)
     ucp_request_param_t     *req_param  = &task->task_reqs.req_param;
     ucc_status_t            status;
 
-    if (task->task_reqs.put_bf_idx == task->task_reqs.get_bf_idx &&
+    if (ucc_tl_dpu_putq_available(task) &&
         task->task_reqs.put_data_count < count_total) {
 
         status = ucc_tl_dpu_issue_put(task, ctx, team, sbuf, req_param);
@@ -271,7 +267,7 @@ ucc_status_t ucc_tl_dpu_allreduce_start(ucc_coll_task_t *coll_task)
     ucp_request_param_t  *req_param;
     ucc_status_t         status;
  
-    tl_info(team->super.super.context->lib, "Collective post");
+    tl_info(team->super.super.context->lib, "Allreduce post");
 
     if (UCC_IS_INPLACE(task->args)) {
         sbuf = task->args.src.info.buffer = rbuf;
@@ -361,6 +357,131 @@ ucc_status_t ucc_tl_dpu_allreduce_init(ucc_tl_dpu_task_t *task)
     return UCC_OK;
 }
 
+
+ucc_status_t ucc_tl_dpu_alltoall_progress(ucc_coll_task_t *coll_task)
+{
+    ucc_tl_dpu_task_t       *task =
+        ucc_derived_of(coll_task, ucc_tl_dpu_task_t);
+    ucc_tl_dpu_team_t       *team       = task->team;
+    ucc_tl_dpu_context_t    *ctx        = UCC_TL_DPU_TEAM_CTX(team);
+    void                    *sbuf       = task->args.src.info.buffer;
+    void                    *rbuf       = task->args.dst.info.buffer;
+    size_t                  count_total = task->args.src.info.count;
+    ucp_request_param_t     *req_param  = &task->task_reqs.req_param;
+    ucc_status_t            status;
+
+    if (ucc_tl_dpu_putq_available(task) &&
+        task->task_reqs.put_data_count < count_total) {
+
+        status = ucc_tl_dpu_issue_put(task, ctx, team, sbuf, req_param);
+        if (UCC_OK != status) {
+            goto err;
+        }
+    }
+
+    if (team->coll_id == (team->get_sync.coll_id + 1) &&
+        task->task_reqs.get_data_count < team->get_sync.count_serviced) {
+
+        status = ucc_tl_dpu_issue_get(task, ctx, team, rbuf, req_param);
+        if (UCC_OK != status) {
+            goto err;
+        }
+    }
+
+    status = ucc_tl_dpu_check_progress(task, ctx);
+    task->super.super.status = status;
+
+err:
+    return status;
+}
+
+ucc_status_t ucc_tl_dpu_alltoall_start(ucc_coll_task_t *coll_task)
+{
+    ucc_tl_dpu_task_t    *task        = ucs_derived_of(coll_task, ucc_tl_dpu_task_t);
+    ucc_tl_dpu_team_t    *team        = task->team;
+    ucc_tl_dpu_context_t *ctx         = UCC_TL_DPU_TEAM_CTX(team);
+    void                 *sbuf        = task->args.src.info.buffer;
+    void                 *rbuf        = task->args.dst.info.buffer;
+    size_t               count_total  = task->args.src.info.count;
+    //ucc_datatype_t       dt           = task->args.src.info.datatype;
+    //size_t               dt_size      = ucc_dt_size(dt);
+    ucp_request_param_t  *req_param;
+    ucc_status_t         status;
+ 
+    tl_info(team->super.super.context->lib, "Alltoall post");
+
+    if (UCC_IS_INPLACE(task->args)) {
+        sbuf = task->args.src.info.buffer = rbuf;
+    }
+    
+    task->block_count = count_total; // Not pipelined
+
+    req_param = &task->task_reqs.req_param;
+    req_param->op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_DATATYPE;
+    req_param->datatype     = ucp_dt_make_contig(1);
+    req_param->cb.send      = ucc_tl_dpu_send_handler_nbx;
+    req_param->cb.recv      = ucc_tl_dpu_recv_handler_nbx;
+
+    status = ucc_tl_dpu_issue_put(task, ctx, team, sbuf, req_param);
+    if (UCC_OK != status) {
+        goto put_err;
+    }
+
+    status = ucc_tl_dpu_check_progress(task, ctx);
+    task->super.super.status = status;
+
+    if (UCC_INPROGRESS == status) {
+        status = ucc_tl_dpu_alltoall_progress(&task->super);
+        if (UCC_INPROGRESS == status) {
+            ucc_progress_enqueue(UCC_TL_DPU_TEAM_CORE_CTX(team)->pq, &task->super);
+            return UCC_OK;
+        }
+    }
+
+    return UCC_OK;
+put_err:
+    return UCC_ERR_NO_MESSAGE;
+}
+
+ucc_status_t ucc_tl_dpu_alltoall_init(ucc_tl_dpu_task_t *task)
+{
+    ucc_coll_args_t     *coll_args = &task->args;
+    ucc_tl_dpu_team_t   *team      = task->team;
+
+    if (!UCC_IS_INPLACE(task->args) && (task->args.src.info.mem_type !=
+                                        task->args.dst.info.mem_type)) {
+        tl_error(UCC_TL_TEAM_LIB(task->team),
+                 "assymetric src/dst memory types are not supported yetpp");
+        return UCC_ERR_NOT_SUPPORTED;
+    }
+
+    /* Set sync information for DPU */
+    task->put_sync.coll_id           = team->coll_id;
+    task->put_sync.dtype             = coll_args->src.info.datatype;
+    task->put_sync.count_total       = coll_args->src.info.count;
+    task->put_sync.count_out         = 0;
+    task->put_sync.coll_type         = coll_args->coll_type;
+    task->get_sync.coll_id           = team->coll_id;
+    task->get_sync.count_serviced    = 0;
+    task->pipeline_buffers           = 1; /* Not pipelined */
+
+    /* Initialize all request stuff for pipelining */
+    memset(&task->task_reqs.req_param, 0, sizeof(ucp_request_param_t));
+    task->task_reqs.put_reqs         = ucc_calloc(task->pipeline_buffers, sizeof(ucc_tl_dpu_put_request_t));
+    task->task_reqs.get_reqs         = ucc_calloc(task->pipeline_buffers, sizeof(ucc_tl_dpu_get_request_t));
+    task->task_reqs.put_data_count   = 0;
+    task->task_reqs.get_data_count   = 0;
+    task->task_reqs.put_bf_idx       = 0;
+    task->task_reqs.get_bf_idx       = 0;
+    task->task_reqs.puts_in_flight   = 0;
+
+    task->super.post     = ucc_tl_dpu_alltoall_start;
+    task->super.progress = ucc_tl_dpu_alltoall_progress;
+
+    return UCC_OK;
+}
+
 static ucc_status_t ucc_tl_dpu_coll_finalize(ucc_coll_task_t *coll_task)
 {
     ucc_tl_dpu_task_t *task = ucc_derived_of(coll_task, ucc_tl_dpu_task_t);
@@ -393,6 +514,9 @@ ucc_status_t ucc_tl_dpu_coll_init(ucc_base_coll_args_t      *coll_args,
     switch (coll_args->args.coll_type) {
     case UCC_COLL_TYPE_ALLREDUCE:
         status = ucc_tl_dpu_allreduce_init(task);
+        break;
+    case UCC_COLL_TYPE_ALLTOALL:
+        status = ucc_tl_dpu_alltoall_init(task);
         break;
     default:
         status = UCC_ERR_NOT_SUPPORTED;
