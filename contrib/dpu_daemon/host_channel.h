@@ -98,7 +98,7 @@ typedef struct dpu_hc_s {
 
 int dpu_hc_init(dpu_hc_t *dpu_hc);
 int dpu_hc_accept(dpu_hc_t *hc);
-int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t ar_sync);
+int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t coll_sync);
 int dpu_hc_wait(dpu_hc_t *hc, unsigned int coll_id);
 unsigned int        dpu_hc_get_count_total(dpu_hc_t *hc);
 unsigned int        dpu_hc_get_count_in(dpu_hc_t *hc);

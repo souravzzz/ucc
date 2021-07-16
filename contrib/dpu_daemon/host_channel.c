@@ -619,7 +619,7 @@ unsigned int dpu_hc_get_count_in(dpu_hc_t *hc)
     return lsync->count_in;
 }
 
-int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t ar_sync)
+int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t coll_sync)
 {
     // dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     ucp_request_param_t req_param;
@@ -638,7 +638,7 @@ int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t ar_sync)
 //     while( lsync->itt < cntr) {
 //         ucp_worker_progress(hc->ucp_worker);
 //     }
-    request = ucp_put_nbx(hc->host_ep, &ar_sync, sizeof(ar_sync),
+    request = ucp_put_nbx(hc->host_ep, &coll_sync, sizeof(coll_sync),
                           hc->sync_addr, hc->sync_rkey,
                           &req_param);
     ret = _dpu_request_finalize(hc->ucp_worker, request, &req_ctx);
