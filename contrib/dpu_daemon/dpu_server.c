@@ -61,9 +61,10 @@ static void dpu_thread_set_affinity(thread_ctx_t *ctx)
 
 static void dpu_coll_init_allreduce(thread_ctx_t *ctx, ucc_coll_req_h *request)
 {
-    size_t count = tmp_sync.count_in - ctx->coll_sync.count_serviced;
     size_t dt_size = dpu_ucc_dt_size(tmp_sync.dtype);
-
+    size_t count = DPU_MIN(ctx->pipeline_buffer_size/dt_size,
+                tmp_sync.count_in - ctx->coll_sync.count_serviced);
+    ctx->coll_sync.count_serviced += count;
     size_t block = count / ctx->nthreads;
     size_t offset = (ctx->buf_idx % ctx->pipeline_buffers) * ctx->pipeline_buffer_size + block * ctx->idx;
 
@@ -140,6 +141,8 @@ void *dpu_worker(void *arg)
         /* Wait for operation to start */
         ctx->coll_sync.coll_id++;
         ctx->coll_sync.count_serviced = 0;
+        ctx->buf_idx = 0;
+
         if (ctx->idx > 0) {
             while (thread_main_sync[ctx->idx].g_coll_id < ctx->coll_sync.coll_id) {
                 /* busy wait */
@@ -220,7 +223,7 @@ void *dpu_worker(void *arg)
             }
 
             ctx->buf_idx++;
-            ctx->coll_sync.count_serviced += tmp_sync.count_in - ctx->coll_sync.count_serviced;
+            // ctx->coll_sync.count_serviced += tmp_sync.count_in - ctx->coll_sync.count_serviced;
             thread_sub_sync[ctx->idx].g_coll_id++;
             fprintf(stderr, "count in: %lu, total: %lu, serviced: %lu\n",
                         tmp_sync.count_in, tmp_sync.count_total, ctx->coll_sync.count_serviced);

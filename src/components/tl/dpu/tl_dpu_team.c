@@ -28,7 +28,7 @@ UCC_CLASS_INIT_FUNC(ucc_tl_dpu_team_t, ucc_base_context_t *tl_context,
     size_t   pipeline_buffers =
         UCC_TL_DPU_TEAM_LIB(self)->cfg.pipeline_buffers;
     
-    self->coll_id   = 1;
+    self->coll_id   = 0;
     self->size      = params->params.oob.participants;
     self->rank      = params->rank;
     self->status    = UCC_OPERATION_INITIALIZED;
@@ -232,7 +232,7 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
     ucc_tl_dpu_request_t        *hangup_req;
     ucp_request_param_t         req_param;
  
-    hangup.coll_id      = team->coll_id;
+    hangup.coll_id      = ++team->coll_id;
     hangup.coll_type    = UCC_COLL_TYPE_LAST;
     hangup.dtype        = UCC_DT_USERDEFINED;
     hangup.op           = UCC_OP_USERDEFINED;
@@ -243,7 +243,7 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
     req_param.datatype     = ucp_dt_make_contig(1);
     req_param.cb.send      = ucc_tl_dpu_send_handler_nbx;
  
-    tl_info(ctx->super.super.lib, "sending hangup to dpu team");
+    tl_info(ctx->super.super.lib, "sending hangup to dpu team, coll id = %u", hangup.coll_id);
     hangup_req = ucp_put_nbx(ctx->ucp_ep, &hangup, sizeof(hangup),
                              team->rem_ctrl_seg, team->rem_ctrl_seg_key,
                              &req_param);

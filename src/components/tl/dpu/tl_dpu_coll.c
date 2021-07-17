@@ -185,14 +185,14 @@ static ucc_status_t ucc_tl_dpu_check_progress(
     for (i = 0; i < coll_poll; i++) {
         status = UCC_OK;
 
-        put_req = task->task_reqs.put_reqs;
+        put_req = &task->task_reqs.put_reqs[0];
         while (NULL != put_req && UCC_OK == status) {
             status |= ucc_tl_dpu_req_test(&put_req->data_req, ctx->ucp_worker);
             status |= ucc_tl_dpu_req_test(&put_req->sync_req, ctx->ucp_worker);
             put_req = put_req->next;
         }
 
-        get_req = task->task_reqs.get_reqs;
+        get_req = &task->task_reqs.get_reqs[0];
         while (NULL != get_req && UCC_OK == status) {
             status |= ucc_tl_dpu_req_test(&get_req->data_req,
                                               ctx->ucp_worker);
@@ -235,7 +235,7 @@ ucc_status_t ucc_tl_dpu_allreduce_progress(ucc_coll_task_t *coll_task)
         }
     }
 
-    if (team->coll_id == (team->get_sync.coll_id + 1) &&
+    if (team->coll_id == team->get_sync.coll_id &&
         task->task_reqs.get_data_count < team->get_sync.count_serviced) {
 
         status = ucc_tl_dpu_issue_get(task, ctx, team, rbuf, req_param);
@@ -336,7 +336,7 @@ ucc_status_t ucc_tl_dpu_allreduce_init(ucc_tl_dpu_task_t *task)
     task->put_sync.count_out         = 0;
     task->put_sync.op                = coll_args->reduce.predefined_op;
     task->put_sync.coll_type         = coll_args->coll_type;
-    task->get_sync.coll_id           = team->coll_id;
+    task->get_sync.coll_id           = 0;
     task->get_sync.count_serviced    = 0;
     task->pipeline_buffers           =
         (UCC_TL_DPU_TEAM_LIB(task->team)->cfg.pipeline_buffers);
@@ -379,7 +379,7 @@ ucc_status_t ucc_tl_dpu_alltoall_progress(ucc_coll_task_t *coll_task)
         }
     }
 
-    if (team->coll_id == (team->get_sync.coll_id + 1) &&
+    if (team->coll_id == team->get_sync.coll_id &&
         task->task_reqs.get_data_count < team->get_sync.count_serviced) {
 
         status = ucc_tl_dpu_issue_get(task, ctx, team, rbuf, req_param);
@@ -462,7 +462,7 @@ ucc_status_t ucc_tl_dpu_alltoall_init(ucc_tl_dpu_task_t *task)
     task->put_sync.count_total       = coll_args->src.info.count;
     task->put_sync.count_out         = 0;
     task->put_sync.coll_type         = coll_args->coll_type;
-    task->get_sync.coll_id           = team->coll_id;
+    task->get_sync.coll_id           = 0;
     task->get_sync.count_serviced    = 0;
     task->pipeline_buffers           = 1; /* Not pipelined */
 

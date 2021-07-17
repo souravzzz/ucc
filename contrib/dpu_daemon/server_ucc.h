@@ -30,6 +30,10 @@
         }                                                                      \
     } while (0)
 
+#define DPU_MIN(a,b) (((a)<(b))?(a):(b))
+#define DPU_MAX(a,b) (((a)>(b))?(a):(b))
+
+
 typedef struct {
     ucc_team_h          ucc_world_team;
     ucc_lib_h           lib;
