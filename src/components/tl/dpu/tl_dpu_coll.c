@@ -37,20 +37,8 @@ static ucc_tl_dpu_task_t * ucc_tl_dpu_alloc_task(void)
 
 static ucc_status_t ucc_tl_dpu_free_task(ucc_tl_dpu_task_t *task)
 {
-    ucc_tl_dpu_put_request_t *put_req = task->task_reqs.put_reqs, *put_req_tmp;
-    ucc_tl_dpu_get_request_t *get_req = task->task_reqs.get_reqs, *get_req_tmp;
-    
-    while (NULL != put_req) {
-        put_req_tmp = put_req;
-        put_req = put_req->next;
-        ucc_free(put_req_tmp);
-    }
-    while (NULL != get_req) {
-        get_req_tmp = get_req;
-        get_req = get_req->next;
-        ucc_free(get_req_tmp);
-    }
-
+    ucc_free(task->task_reqs.put_reqs);
+    ucc_free(task->task_reqs.get_reqs);
     ucc_free(task);
     return UCC_OK;
 }
@@ -120,6 +108,7 @@ static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
     if (ucc_tl_dpu_req_check(team, put_req->data_req) != UCC_OK) {
         return UCC_ERR_NO_MESSAGE;
     }
+
     ucp_worker_fence(ctx->ucp_worker);
     
     /* Initialize put_sync_data for xfer */
@@ -133,11 +122,13 @@ static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
     if (ucc_tl_dpu_req_check(team, put_req->sync_req) != UCC_OK) {
         return UCC_ERR_NO_MESSAGE;
     }
+ 
     ucp_worker_fence(ctx->ucp_worker);
 
     task->task_reqs.puts_in_flight++;
     task->task_reqs.put_data_count += count;
     task->task_reqs.put_bf_idx = (put_idx + 1) % task->pipeline_buffers;
+    
     return UCC_OK;
 }
 
@@ -153,8 +144,8 @@ static ucc_status_t ucc_tl_dpu_issue_get(
     size_t data_size  = count * dt_size;
     size_t offset     = task->task_reqs.get_data_count * dt_size;
     uint32_t get_idx  = task->task_reqs.get_bf_idx;
-    ucc_tl_dpu_get_request_t *get_req = &task->task_reqs.get_reqs[get_idx];
 
+    ucc_tl_dpu_get_request_t *get_req = &task->task_reqs.get_reqs[get_idx];
 
     get_req->data_req =
         ucp_get_nbx(ctx->ucp_ep, ((char *)rbuf + offset), data_size,
@@ -163,7 +154,6 @@ static ucc_status_t ucc_tl_dpu_issue_get(
     if (ucc_tl_dpu_req_check(team, get_req->data_req) != UCC_OK) {
         return UCC_ERR_NO_MESSAGE;
     }
-    ucp_worker_fence(ctx->ucp_worker);
 
     task->task_reqs.get_bf_idx = (get_idx + 1) % task->pipeline_buffers;
     task->task_reqs.get_data_count += count;
@@ -175,28 +165,24 @@ static ucc_status_t ucc_tl_dpu_issue_get(
 static ucc_status_t ucc_tl_dpu_check_progress(
     ucc_tl_dpu_task_t *task, ucc_tl_dpu_context_t *ctx)
 {
-    int i = 0, coll_poll = UCC_TL_DPU_COLL_POLL;
+    int i = 0, j = 0, coll_poll = UCC_TL_DPU_COLL_POLL;
     ucc_tl_dpu_put_request_t *put_req;
     ucc_tl_dpu_get_request_t *get_req;
     ucc_status_t status;
+    unsigned int pipeline_buffers =
+        (UCC_TL_DPU_TEAM_LIB(task->team)->cfg.pipeline_buffers);
 
     ucp_worker_progress(ctx->ucp_worker);
 
     for (i = 0; i < coll_poll; i++) {
         status = UCC_OK;
 
-        put_req = &task->task_reqs.put_reqs[0];
-        while (NULL != put_req && UCC_OK == status) {
+        for (j = 0; j < pipeline_buffers; j++) {
+            put_req = &task->task_reqs.put_reqs[j];
+            get_req = &task->task_reqs.get_reqs[j];
             status |= ucc_tl_dpu_req_test(&put_req->data_req, ctx->ucp_worker);
             status |= ucc_tl_dpu_req_test(&put_req->sync_req, ctx->ucp_worker);
-            put_req = put_req->next;
-        }
-
-        get_req = &task->task_reqs.get_reqs[0];
-        while (NULL != get_req && UCC_OK == status) {
-            status |= ucc_tl_dpu_req_test(&get_req->data_req,
-                                              ctx->ucp_worker);
-            get_req = get_req->next;
+            status |= ucc_tl_dpu_req_test(&get_req->data_req, ctx->ucp_worker);
         }
 
         if (UCC_OK == status) {
@@ -207,8 +193,8 @@ static ucc_status_t ucc_tl_dpu_check_progress(
     /* Ops are done, or pipeline is progressing, check count */
     if (UCC_OK == status) {
         status =
-            (task->task_reqs.put_data_count + task->task_reqs.get_data_count) ==
-             (2 * task->args.src.info.count) ? UCC_OK : UCC_INPROGRESS;
+            (task->task_reqs.get_data_count == task->args.src.info.count) ?
+                UCC_OK : UCC_INPROGRESS;
     }
 
     return status;
@@ -225,7 +211,7 @@ ucc_status_t ucc_tl_dpu_allreduce_progress(ucc_coll_task_t *coll_task)
     size_t                  count_total = task->args.src.info.count;
     ucp_request_param_t     *req_param  = &task->task_reqs.req_param;
     ucc_status_t            status;
-
+    
     if (ucc_tl_dpu_putq_available(task) &&
         task->task_reqs.put_data_count < count_total) {
 

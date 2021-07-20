@@ -52,8 +52,8 @@ typedef struct dpu_put_sync_s {
 } dpu_put_sync_t;
 
 typedef struct dpu_get_sync_s {
-    unsigned int    coll_id;
     unsigned int    count_serviced;
+    unsigned int    coll_id;
 } dpu_get_sync_t;
 
 typedef struct dpu_rkey_s {

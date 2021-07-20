@@ -250,9 +250,9 @@ ucc_status_t ucc_tl_dpu_team_destroy(ucc_base_team_t *tl_team)
     if (ucc_tl_dpu_req_check(team, hangup_req) != UCC_OK) {
         return UCC_ERR_NO_MESSAGE;
     }
-    do {
+    while((ucc_tl_dpu_req_test(&(hangup_req), ctx->ucp_worker) != UCC_OK)) {
         ucp_worker_progress(ctx->ucp_worker);
-    } while((ucc_tl_dpu_req_test(&(hangup_req), ctx->ucp_worker) != UCC_OK));
+    }
     tl_info(ctx->super.super.lib, "sent hangup to dpu team");
  
     ucp_rkey_destroy(team->rem_ctrl_seg_key);

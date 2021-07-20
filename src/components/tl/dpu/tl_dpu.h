@@ -82,20 +82,18 @@ typedef struct ucc_tl_dpu_put_sync_t {
 } ucc_tl_dpu_put_sync_t;
 
 typedef struct ucc_tl_dpu_get_sync_t {
-    uint32_t    coll_id;
     uint32_t    count_serviced;
+    uint32_t    coll_id;
 } ucc_tl_dpu_get_sync_t;
 
 typedef struct ucc_tl_dpu_put_request {
     ucc_tl_dpu_request_t *data_req;
     ucc_tl_dpu_request_t *sync_req;
     ucc_tl_dpu_put_sync_t sync_data;
-    struct ucc_tl_dpu_put_request *next;
 } ucc_tl_dpu_put_request_t;
 
 typedef struct ucc_tl_dpu_get_request {
     ucc_tl_dpu_request_t *data_req;
-    struct ucc_tl_dpu_get_request *next;
 } ucc_tl_dpu_get_request_t;
 
 typedef struct ucc_tl_dpu_connect_s {

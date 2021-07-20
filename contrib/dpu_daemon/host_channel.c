@@ -587,11 +587,16 @@ err:
 
 int dpu_hc_wait(dpu_hc_t *hc, unsigned int coll_id)
 {
+    
     dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     
+    printf ("%s() START (lsync->coll_id %d <? coll_id %d)\n", __FUNCTION__, lsync->coll_id, coll_id);
+
     while( lsync->coll_id < coll_id) {
         ucp_worker_progress(hc->ucp_worker);
     }
+    printf ("%s() DONE (lsync->coll_id %d <? coll_id %d) \n", __FUNCTION__, lsync->coll_id, coll_id);
+
     return 0;
 }
 
@@ -621,6 +626,8 @@ unsigned int dpu_hc_get_count_in(dpu_hc_t *hc)
 
 int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t coll_sync)
 {
+    printf ("%s() START (coll_sync(%d, %d)\n", __FUNCTION__,
+        coll_sync.coll_id, coll_sync.count_serviced);
     // dpu_put_sync_t *lsync = (dpu_put_sync_t*)hc->mem_segs.sync.base;
     ucp_request_param_t req_param;
     void *request;
@@ -645,6 +652,8 @@ int dpu_hc_reply(dpu_hc_t *hc, dpu_get_sync_t coll_sync)
     if (ret) {
         return -1;
     }
+
+    printf("%s() END\n", __FUNCTION__);
     return 0;
 }
 

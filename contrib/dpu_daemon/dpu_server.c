@@ -68,24 +68,25 @@ static void dpu_coll_init_allreduce(thread_ctx_t *ctx, ucc_coll_req_h *request)
     size_t block = count / ctx->nthreads;
     size_t offset = (ctx->buf_idx % ctx->pipeline_buffers) * ctx->pipeline_buffer_size + block * ctx->idx;
 
+    
     if(ctx->idx < (count % ctx->nthreads)) {
         offset += ctx->idx;
         block++;
     } else {
         offset += (count % ctx->nthreads);
     }
-    
+
     ucc_coll_args_t coll = {
         .coll_type = UCC_COLL_TYPE_ALLREDUCE,
         .mask      = UCC_COLL_ARGS_FIELD_PREDEFINED_REDUCTIONS,
         .src.info = {
-            .buffer   = ctx->hc->mem_segs.put.base + offset * dt_size,
+            .buffer   = (char *)ctx->hc->mem_segs.put.base + offset,
             .count    = block,
             .datatype = tmp_sync.dtype,
             .mem_type = UCC_MEMORY_TYPE_HOST,
         },
         .dst.info = {
-            .buffer   = ctx->hc->mem_segs.get.base + offset * dt_size,
+            .buffer   = (char *)ctx->hc->mem_segs.get.base + offset,
             .count    = block,
             .datatype = tmp_sync.dtype,
             .mem_type = UCC_MEMORY_TYPE_HOST,
@@ -157,7 +158,7 @@ void *dpu_worker(void *arg)
         }
 
         /* Hang up? */
-        fprintf(stderr, "coll id: %d, type: %d\n", lsync->coll_id, lsync->coll_type);
+        // fprintf(stderr, "coll id: %d, type: %d\n", lsync->coll_id, lsync->coll_type);
         if (lsync->coll_type == UCC_COLL_TYPE_LAST) {
             break;
         }
@@ -222,11 +223,19 @@ void *dpu_worker(void *arg)
                 UCC_CHECK(ucc_collective_finalize(request));
             }
 
+            // unsigned long *p = (unsigned long *)ctx->hc->mem_segs.put.base;
+            // unsigned long *p1 = (unsigned long*)ctx->hc->mem_segs.get.base;
+            // printf ("put.base[0]=%lu, get.base[0]=%lu\n", *p, *p1);
+
+            // unsigned long *p2 = (unsigned long *)ctx->hc->mem_segs.put.base + 128;
+            // unsigned long *p3 = (unsigned long*)ctx->hc->mem_segs.get.base + 128;
+            // printf ("put.base[128]=%lu, get.base[128]=%lu\n", *p2, *p3);
+
             ctx->buf_idx++;
             // ctx->coll_sync.count_serviced += tmp_sync.count_in - ctx->coll_sync.count_serviced;
             thread_sub_sync[ctx->idx].g_coll_id++;
-            fprintf(stderr, "count in: %lu, total: %lu, serviced: %lu\n",
-                        tmp_sync.count_in, tmp_sync.count_total, ctx->coll_sync.count_serviced);
+            // fprintf(stderr, "count in: %lu, total: %lu, serviced: %lu\n",
+            //             tmp_sync.count_in, tmp_sync.count_total, ctx->coll_sync.count_serviced);
 
             if (ctx->idx > 0) {
                 /* wait to be released into next iteration */
@@ -253,7 +262,7 @@ void *dpu_worker(void *arg)
         } while (ctx->coll_sync.count_serviced < lsync->count_total);
 
         thread_main_sync[ctx->idx].l_coll_id++;
-        fprintf(stderr, "l_coll_id: %d\n", thread_main_sync[ctx->idx].l_coll_id++);
+        // fprintf(stderr, "l_coll_id: %d\n", thread_main_sync[ctx->idx].l_coll_id++);
     }
     return NULL;
 }
