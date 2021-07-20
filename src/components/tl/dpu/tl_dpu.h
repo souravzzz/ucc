@@ -76,14 +76,14 @@ typedef struct ucc_tl_dpu_put_sync_t {
     ucc_datatype_t           dtype;
     ucc_reduction_op_t       op;
     ucc_coll_type_t          coll_type;
-    unsigned int             count_total;
-    unsigned int             count_out;
-    unsigned int             coll_id;
+    uint32_t                 count_total;
+    uint32_t                 count_out;
+    uint32_t                 coll_id;
 } ucc_tl_dpu_put_sync_t;
 
 typedef struct ucc_tl_dpu_get_sync_t {
-    uint32_t    count_serviced;
-    uint32_t    coll_id;
+    volatile uint32_t       count_serviced;
+    volatile uint32_t       coll_id;
 } ucc_tl_dpu_get_sync_t;
 
 typedef struct ucc_tl_dpu_put_request {

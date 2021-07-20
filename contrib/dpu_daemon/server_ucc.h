@@ -30,6 +30,16 @@
         }                                                                      \
     } while (0)
 
+#ifdef NDEBUG
+#define DPU_LOG(...)
+#else
+#define DPU_LOG(_fmt, ...)                                  \
+do {                                                        \
+    fprintf(stderr, "[%d] %s:%d:%s(): " _fmt,                    \
+            ctx->idx, __FILE__, __LINE__, __func__, ##__VA_ARGS__);   \
+} while (0)
+#endif
+
 #define DPU_MIN(a,b) (((a)<(b))?(a):(b))
 #define DPU_MAX(a,b) (((a)>(b))?(a):(b))
 

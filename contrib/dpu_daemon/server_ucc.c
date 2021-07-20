@@ -90,14 +90,21 @@ int dpu_ucc_init(int argc, char **argv, dpu_ucc_global_t *g)
     ucc_lib_params_t lib_params = {
         .mask = UCC_LIB_PARAM_FIELD_THREAD_MODE |
                 UCC_LIB_PARAM_FIELD_COLL_TYPES,
-        .thread_mode = UCC_THREAD_SINGLE,
+        .thread_mode = UCC_THREAD_MULTIPLE,
                 /* TODO: support more collectives */
-        .coll_types  = UCC_COLL_TYPE_ALLREDUCE,
+        .coll_types  = UCC_COLL_TYPE_ALLREDUCE | UCC_COLL_TYPE_ALLTOALL,
     };
 
     UCCCHECK_GOTO(ucc_init(&lib_params, g->lib_config, &g->lib),
                     free_lib_config, status);
 
+    ucc_lib_attr_t lib_attr;
+    lib_attr.mask = UCC_LIB_ATTR_FIELD_THREAD_MODE;
+    UCC_CHECK(ucc_lib_get_attr(g->lib, &lib_attr));
+    if (lib_attr.thread_mode != UCC_THREAD_MULTIPLE) {
+        fprintf(stderr, "ucc library wasn't initialized with mt support "
+                        "check ucc compile options ");
+    }
 free_lib_config:
     ucc_lib_config_release(g->lib_config);
 exit_err:
@@ -108,6 +115,7 @@ int dpu_ucc_alloc_team(dpu_ucc_global_t *g, dpu_ucc_comm_t *comm)
 {
     ucc_status_t status = UCC_OK;
 
+    /* TODO: try UCC_CONTEXT_EXCLUSIVE */
     /* Init ucc context for a specified UCC_TEST_TLS */
     ucc_context_params_t ctx_params = {
         .mask   = UCC_CONTEXT_PARAM_FIELD_TYPE |

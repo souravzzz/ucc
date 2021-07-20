@@ -87,9 +87,9 @@ static int ucc_tl_dpu_putq_available(ucc_tl_dpu_task_t *task)
     return puts_in_flight < capacity;
 }
 
-static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
-    ucc_tl_dpu_context_t *ctx, ucc_tl_dpu_team_t *team, void *sbuf,
-    ucp_request_param_t *req_param)
+static void ucc_tl_dpu_init_put(
+    ucc_tl_dpu_task_t *task, ucc_tl_dpu_team_t *team,
+    size_t *count_p, size_t *data_size_p, size_t *offset_p)
 {
     ucc_datatype_t dt  = task->args.src.info.datatype;
     size_t dt_size     = ucc_dt_size(dt);
@@ -98,9 +98,26 @@ static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
     size_t count       = ucc_min(task->block_count, count_rem);
     size_t data_size   = count * dt_size;
     size_t offset      = task->task_reqs.put_data_count * dt_size;
+
+    if (task->args.coll_type == UCC_COLL_TYPE_ALLTOALL) {
+        data_size *= team->size;
+        offset *= team->size;
+    }
+
+    *count_p     = count;
+    *data_size_p = data_size;
+    *offset_p    = offset;
+}
+
+static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
+    ucc_tl_dpu_context_t *ctx, ucc_tl_dpu_team_t *team, void *sbuf,
+    ucp_request_param_t *req_param)
+{
     uint32_t put_idx   = task->task_reqs.put_bf_idx;
     ucc_tl_dpu_put_request_t *put_req = &task->task_reqs.put_reqs[put_idx];
+    size_t count, data_size, offset;
 
+    ucc_tl_dpu_init_put(task, team, &count, &data_size, &offset);
     put_req->data_req =
         ucp_put_nbx(ctx->ucp_ep, ((char *)sbuf + offset), data_size,
                     team->rem_data_in[put_idx], team->rem_data_in_key,
@@ -132,9 +149,9 @@ static ucc_status_t ucc_tl_dpu_issue_put( ucc_tl_dpu_task_t *task,
     return UCC_OK;
 }
 
-static ucc_status_t ucc_tl_dpu_issue_get(
-    ucc_tl_dpu_task_t *task, ucc_tl_dpu_context_t *ctx,
-    ucc_tl_dpu_team_t *team, void *rbuf, ucp_request_param_t *req_param)
+static void ucc_tl_dpu_init_get(
+    ucc_tl_dpu_task_t *task, ucc_tl_dpu_team_t *team,
+    size_t *count_p, size_t *data_size_p, size_t *offset_p)
 {
     ucc_datatype_t dt = task->args.src.info.datatype;
     size_t dt_size    = ucc_dt_size(dt);
@@ -143,10 +160,26 @@ static ucc_status_t ucc_tl_dpu_issue_get(
                                 task->task_reqs.get_data_count);
     size_t data_size  = count * dt_size;
     size_t offset     = task->task_reqs.get_data_count * dt_size;
+
+    if (task->args.coll_type == UCC_COLL_TYPE_ALLTOALL) {
+        data_size *= team->size;
+        offset *= team->size;
+    }
+
+    *count_p     = count;
+    *data_size_p = data_size;
+    *offset_p    = offset;
+}
+
+static ucc_status_t ucc_tl_dpu_issue_get(
+    ucc_tl_dpu_task_t *task, ucc_tl_dpu_context_t *ctx,
+    ucc_tl_dpu_team_t *team, void *rbuf, ucp_request_param_t *req_param)
+{
     uint32_t get_idx  = task->task_reqs.get_bf_idx;
-
     ucc_tl_dpu_get_request_t *get_req = &task->task_reqs.get_reqs[get_idx];
+    size_t count, data_size, offset;
 
+    ucc_tl_dpu_init_get(task, team, &count, &data_size, &offset);
     get_req->data_req =
         ucp_get_nbx(ctx->ucp_ep, ((char *)rbuf + offset), data_size,
                     team->rem_data_out[get_idx], team->rem_data_out_key,
@@ -169,15 +202,13 @@ static ucc_status_t ucc_tl_dpu_check_progress(
     ucc_tl_dpu_put_request_t *put_req;
     ucc_tl_dpu_get_request_t *get_req;
     ucc_status_t status;
-    unsigned int pipeline_buffers =
-        (UCC_TL_DPU_TEAM_LIB(task->team)->cfg.pipeline_buffers);
 
     ucp_worker_progress(ctx->ucp_worker);
 
     for (i = 0; i < coll_poll; i++) {
         status = UCC_OK;
 
-        for (j = 0; j < pipeline_buffers; j++) {
+        for (j = 0; j < task->pipeline_buffers; j++) {
             put_req = &task->task_reqs.put_reqs[j];
             get_req = &task->task_reqs.get_reqs[j];
             status |= ucc_tl_dpu_req_test(&put_req->data_req, ctx->ucp_worker);
